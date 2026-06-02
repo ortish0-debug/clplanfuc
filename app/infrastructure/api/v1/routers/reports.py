@@ -1,4 +1,5 @@
 ﻿"""Reports API: P&L, Cash Flow."""
+import calendar
 from datetime import date
 from uuid import UUID
 
@@ -59,3 +60,37 @@ async def get_financial_ratios(
 ) -> dict:
     """Get Financial Ratios: ROI, ROE, EBITDA Margin, Health Score."""
     return await generate_financial_ratios(db, company_id, start_date, end_date)
+
+
+@router.get("/monthly", status_code=200)
+async def get_monthly_breakdown(
+    company_id: UUID,
+    months: int = Query(6, ge=1, le=24),
+    current_user=Depends(CanViewDashboard),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Get monthly P&L breakdown for last N months."""
+    today = date.today()
+    results = []
+
+    for i in range(months - 1, -1, -1):
+        # Calculate year/month going i months back
+        total_months = today.year * 12 + (today.month - 1) - i
+        year = total_months // 12
+        month = (total_months % 12) + 1
+
+        month_start = date(year, month, 1)
+        last_day = calendar.monthrange(year, month)[1]
+        month_end = today if (year == today.year and month == today.month) else date(year, month, last_day)
+
+        pl = await generate_pl_report(db, company_id, month_start, month_end)
+        results.append({
+            "month": month_start.strftime("%Y-%m"),
+            "label": month_start.strftime("%b %y"),
+            "revenue": pl.get("revenue", 0),
+            "expenses": pl.get("opex", 0),
+            "net_income": pl.get("net_income", 0),
+            "ebitda": pl.get("ebitda", 0),
+        })
+
+    return {"months": results}
