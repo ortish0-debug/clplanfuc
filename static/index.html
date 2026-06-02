@@ -150,6 +150,159 @@
       }
     };
 
+    // ─────────────────────────────────────────────────────────────────────────────
+    // ГЛОБАЛЬНЫЙ ПОИСК
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    const SearchModal = ({ onNavigate }) => {
+      const { companyId } = useAuth();
+      const [open, setOpen]     = useState(false);
+      const [query, setQuery]   = useState('');
+      const [results, setResults] = useState(null);
+      const [loading, setLoading] = useState(false);
+      const inputRef = useRef(null);
+      const timerRef = useRef(null);
+
+      // Ctrl+K / Cmd+K открывает поиск
+      useEffect(() => {
+        const onKey = (e) => {
+          if ((e.ctrlKey || e.metaKey) && e.key === 'k') { e.preventDefault(); setOpen(o => !o); }
+          if (e.key === 'Escape') { setOpen(false); setQuery(''); setResults(null); }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+      }, []);
+
+      useEffect(() => {
+        if (open) setTimeout(() => inputRef.current?.focus(), 50);
+        else { setQuery(''); setResults(null); }
+      }, [open]);
+
+      useEffect(() => {
+        clearTimeout(timerRef.current);
+        if (!query.trim() || query.length < 2) { setResults(null); return; }
+        timerRef.current = setTimeout(async () => {
+          setLoading(true);
+          const res = await apiCall('get', `/companies/${companyId}/search/?q=${encodeURIComponent(query)}`);
+          setLoading(false);
+          if (res.success) setResults(res.data.results);
+        }, 300);
+        return () => clearTimeout(timerRef.current);
+      }, [query, companyId]);
+
+      const handleSelect = (hash) => {
+        setOpen(false); setQuery(''); setResults(null);
+        window.location.hash = hash;
+      };
+
+      const SECTIONS = [
+        { key: 'transactions',  label: '💳 Операции',    icon: '💳' },
+        { key: 'counterparties', label: '👥 Контрагенты', icon: '👥' },
+        { key: 'deals',         label: '🎯 Сделки',       icon: '🎯' },
+        { key: 'projects',      label: '📁 Проекты',      icon: '📁' },
+      ];
+
+      const hasResults = results && Object.values(results).some(a => a.length > 0);
+
+      if (!open) return (
+        <button onClick={() => setOpen(true)} title="Поиск (Ctrl+K)" style={{
+          display: 'flex', alignItems: 'center', gap: '6px',
+          padding: '8px 14px', borderRadius: '8px',
+          border: `1.5px solid ${COLORS.border}`, background: COLORS.grayLight,
+          cursor: 'pointer', color: COLORS.textSecondary,
+          fontSize: '13px', fontFamily: 'Inter, sans-serif',
+          transition: 'all 0.15s',
+        }}
+          onMouseEnter={e => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
+          onMouseLeave={e => { e.currentTarget.style.borderColor = COLORS.border; e.currentTarget.style.color = COLORS.textSecondary; }}
+        >
+          🔍 <span>Поиск</span>
+          <span style={{ fontSize: '11px', padding: '2px 6px', borderRadius: '4px', background: COLORS.border, color: COLORS.textSecondary }}>Ctrl+K</span>
+        </button>
+      );
+
+      return (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 10000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: '80px' }}>
+          {/* Backdrop */}
+          <div onClick={() => setOpen(false)} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.45)' }} />
+
+          {/* Панель */}
+          <div style={{
+            position: 'relative', width: '560px', maxWidth: '90vw',
+            background: COLORS.white, borderRadius: '16px',
+            boxShadow: '0 20px 60px rgba(0,0,0,0.25)',
+            overflow: 'hidden', animation: 'slideIn 0.15s ease-out',
+          }}>
+            {/* Поле ввода */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '16px 20px', borderBottom: `1px solid ${COLORS.border}` }}>
+              <span style={{ fontSize: '18px' }}>🔍</span>
+              <input ref={inputRef} value={query} onChange={e => setQuery(e.target.value)}
+                placeholder="Поиск по операциям, контрагентам, сделкам..."
+                style={{ flex: 1, border: 'none', outline: 'none', fontSize: '16px', fontFamily: 'Inter, sans-serif', background: 'transparent', color: COLORS.text }}
+              />
+              {loading && <div style={{ width: '16px', height: '16px', border: `2px solid ${COLORS.border}`, borderTop: `2px solid ${COLORS.accent}`, borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />}
+              {query && <button onClick={() => setQuery('')} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '16px', color: COLORS.textSecondary }}>✕</button>}
+            </div>
+
+            {/* Результаты */}
+            <div style={{ maxHeight: '440px', overflowY: 'auto' }}>
+              {!query && (
+                <div style={{ padding: '24px', textAlign: 'center', color: COLORS.textSecondary }}>
+                  <div style={{ fontSize: '32px', marginBottom: '8px' }}>🔍</div>
+                  <div style={{ fontSize: '14px' }}>Начните вводить для поиска</div>
+                  <div style={{ fontSize: '12px', marginTop: '4px' }}>Операции · Контрагенты · Сделки · Проекты</div>
+                </div>
+              )}
+
+              {query.length >= 2 && !loading && !hasResults && results && (
+                <div style={{ padding: '24px', textAlign: 'center', color: COLORS.textSecondary }}>
+                  <div style={{ fontSize: '28px', marginBottom: '8px' }}>🤷</div>
+                  <div>Ничего не найдено по запросу <b>«{query}»</b></div>
+                </div>
+              )}
+
+              {hasResults && SECTIONS.map(sec => {
+                const items = results[sec.key] || [];
+                if (items.length === 0) return null;
+                return (
+                  <div key={sec.key}>
+                    <div style={{ padding: '10px 20px 4px', fontSize: '11px', fontWeight: 700, color: COLORS.textSecondary, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+                      {sec.label}
+                    </div>
+                    {items.map(item => (
+                      <div key={item.id} onClick={() => handleSelect(item.hash)}
+                        style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '10px 20px', cursor: 'pointer', transition: 'background 0.1s' }}
+                        onMouseEnter={e => e.currentTarget.style.background = COLORS.blueLight}
+                        onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                      >
+                        <span style={{ fontSize: '18px', flexShrink: 0 }}>{sec.icon}</span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 500, fontSize: '14px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.title}</div>
+                          <div style={{ fontSize: '12px', color: COLORS.textSecondary }}>{item.subtitle}</div>
+                        </div>
+                        {item.amount != null && (
+                          <span style={{ fontWeight: 700, fontSize: '13px', flexShrink: 0, color: item.tx_type === 'income' ? COLORS.green : (item.tx_type === 'expense' ? COLORS.red : COLORS.text) }}>
+                            {item.tx_type === 'income' ? '+' : item.tx_type === 'expense' ? '-' : ''}{formatCurrency(Math.abs(item.amount))}
+                          </span>
+                        )}
+                        <span style={{ fontSize: '12px', color: COLORS.textSecondary, flexShrink: 0 }}>→</span>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Подсказка */}
+            <div style={{ padding: '10px 20px', borderTop: `1px solid ${COLORS.border}`, display: 'flex', gap: '16px', fontSize: '11px', color: COLORS.textSecondary }}>
+              <span>↵ Перейти</span>
+              <span>Esc Закрыть</span>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
     // Хелпер для скачивания файлов с Authorization header
     const downloadFile = async (url, filename) => {
       const token = localStorage.getItem('pf_token');
@@ -5658,9 +5811,10 @@
             borderBottom: `1px solid ${COLORS.border}`,
             display: 'flex', alignItems: 'center',
             paddingLeft: '32px', paddingRight: '24px',
-            justifyContent: 'space-between',
+            gap: '12px',
           }}>
-            <h1 style={{ fontSize: '18px', fontWeight: 600, color: COLORS.text }}>{title}</h1>
+            <h1 style={{ fontSize: '18px', fontWeight: 600, color: COLORS.text, flex: 1 }}>{title}</h1>
+            <SearchModal />
             <button onClick={openQuick} style={{
               display: 'flex', alignItems: 'center', gap: '8px',
               padding: '9px 18px', borderRadius: '8px', border: 'none',
