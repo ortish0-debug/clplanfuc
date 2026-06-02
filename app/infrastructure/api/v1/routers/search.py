@@ -4,7 +4,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.models.counterparties import Counterparty
@@ -25,7 +25,24 @@ async def global_search(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Поиск по транзакциям, контрагентам, сделкам и проектам."""
-    pattern = f"%{q.strip().lower()}%"
+    # SQLite lower() не работает с кириллицей — ищем все варианты регистра
+    q_clean = q.strip()
+    patterns = list({
+        f"%{q_clean}%",          # оригинал
+        f"%{q_clean.lower()}%",  # строчные
+        f"%{q_clean.upper()}%",  # ЗАГЛАВНЫЕ
+        f"%{q_clean.title()}%",  # Title Case (каждое слово с заглавной)
+        f"%{q_clean.capitalize()}%",  # Первое слово с заглавной
+    })
+
+    def cyrillic_like(*cols):
+        """OR по всем вариантам регистра для каждой колонки."""
+        conditions = []
+        for col in cols:
+            for pat in patterns:
+                conditions.append(col.like(pat))
+        return or_(*conditions)
+
     results = {"transactions": [], "counterparties": [], "deals": [], "projects": []}
 
     # ── Транзакции ──────────────────────────────────────────────────────────
@@ -34,10 +51,7 @@ async def global_search(
             and_(
                 Transaction.company_id == company_id,
                 Transaction.is_deleted.is_(False),
-                or_(
-                    func.lower(Transaction.description).like(pattern),
-                    func.lower(Transaction.counterparty).like(pattern),
-                ),
+                cyrillic_like(Transaction.description, Transaction.counterparty),
             )
         ).order_by(Transaction.payment_date.desc()).limit(5)
     )
@@ -58,10 +72,7 @@ async def global_search(
             and_(
                 Counterparty.company_id == company_id,
                 Counterparty.is_deleted.is_(False),
-                or_(
-                    func.lower(Counterparty.name).like(pattern),
-                    func.lower(Counterparty.inn).like(pattern),
-                ),
+                cyrillic_like(Counterparty.name, Counterparty.inn),
             )
         ).limit(5)
     )
@@ -79,10 +90,7 @@ async def global_search(
         select(Deal).where(
             and_(
                 Deal.company_id == company_id,
-                or_(
-                    func.lower(Deal.title).like(pattern),
-                    func.lower(Deal.counterparty_name).like(pattern),
-                ),
+                cyrillic_like(Deal.title, Deal.counterparty_name),
             )
         ).limit(5)
     )
@@ -105,10 +113,7 @@ async def global_search(
             and_(
                 Project.company_id == company_id,
                 Project.is_deleted.is_(False),
-                or_(
-                    func.lower(Project.name).like(pattern),
-                    func.lower(Project.description).like(pattern),
-                ),
+                cyrillic_like(Project.name, Project.description),
             )
         ).limit(5)
     )
