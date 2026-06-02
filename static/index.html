@@ -3851,6 +3851,258 @@
 
     // Сайдбар с новыми пунктами
     // ─────────────────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────────────
+    // ШАБЛОНЫ ОПЕРАЦИЙ
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    const TemplatesPage = () => {
+      const { companyId } = useAuth();
+      const [templates, setTemplates] = useState([]);
+      const [accounts, setAccounts]   = useState([]);
+      const [loading, setLoading]     = useState(true);
+      const [applying, setApplying]   = useState(null); // id шаблона
+      const [showCreate, setShowCreate] = useState(false);
+      const [toast, setToast]         = useState(null);
+      const [form, setForm] = useState({
+        name: '', description: '', amount: '',
+        transaction_type: 'expense', account_id: '',
+      });
+
+      const POPULAR = [
+        { name: 'Аренда офиса',      amount: 85000,  transaction_type: 'expense', description: 'Ежемесячная аренда офиса' },
+        { name: 'Зарплата команды',  amount: 350000, transaction_type: 'expense', description: 'Выплата зарплаты сотрудникам' },
+        { name: 'Абонентская плата', amount: 5000,   transaction_type: 'expense', description: 'Сервисы и подписки' },
+        { name: 'Поступление выручки', amount: 200000, transaction_type: 'income', description: 'Оплата от клиента' },
+      ];
+
+      const load = async () => {
+        setLoading(true);
+        const [tRes, aRes] = await Promise.all([
+          apiCall('get', `/companies/${companyId}/templates/`),
+          apiCall('get', `/companies/${companyId}/accounts`),
+        ]);
+        if (tRes.success) setTemplates(tRes.data.templates || []);
+        if (aRes.success) {
+          const list = aRes.data.accounts || [];
+          setAccounts(list);
+          if (list.length > 0 && !form.account_id) setForm(f => ({ ...f, account_id: list[0].id }));
+        }
+        setLoading(false);
+      };
+
+      useEffect(() => { if (companyId) load(); }, [companyId]);
+
+      const handleCreate = async () => {
+        if (!form.name.trim() || !form.amount) {
+          setToast({ type: 'error', message: 'Введите название и сумму' }); return;
+        }
+        const res = await apiCall('post', `/companies/${companyId}/templates/`, {
+          name: form.name.trim(),
+          description: form.description || null,
+          amount: parseFloat(form.amount),
+          transaction_type: form.transaction_type,
+          account_id: form.account_id || null,
+        });
+        if (res.success) {
+          setToast({ type: 'success', message: 'Шаблон создан' });
+          setShowCreate(false);
+          setForm({ name: '', description: '', amount: '', transaction_type: 'expense', account_id: accounts[0]?.id || '' });
+          load();
+        } else setToast({ type: 'error', message: res.error });
+      };
+
+      const handleApply = async (tpl) => {
+        setApplying(tpl.id);
+        const res = await apiCall('post', `/companies/${companyId}/templates/${tpl.id}/apply`, {
+          payment_date: new Date().toISOString().split('T')[0],
+        });
+        setApplying(null);
+        if (res.success) {
+          setToast({ type: 'success', message: `✅ Создана операция: ${res.data.description} — ${formatCurrency(res.data.amount)}` });
+        } else setToast({ type: 'error', message: res.error });
+      };
+
+      const handleDelete = async (id) => {
+        const res = await apiCall('delete', `/companies/${companyId}/templates/${id}`);
+        if (res.success) { setToast({ type: 'success', message: 'Шаблон удалён' }); load(); }
+        else setToast({ type: 'error', message: res.error });
+      };
+
+      const handleAddPopular = async (p) => {
+        const res = await apiCall('post', `/companies/${companyId}/templates/`, {
+          name: p.name, description: p.description,
+          amount: p.amount, transaction_type: p.transaction_type,
+          account_id: accounts[0]?.id || null,
+        });
+        if (res.success) { setToast({ type: 'success', message: `Шаблон «${p.name}» добавлен` }); load(); }
+      };
+
+      const TypeBadge = ({ type }) => (
+        <span style={{
+          padding: '3px 10px', borderRadius: '12px', fontSize: '11px', fontWeight: 700,
+          background: type === 'income' ? '#dcfce7' : '#fee2e2',
+          color: type === 'income' ? COLORS.green : COLORS.red,
+        }}>
+          {type === 'income' ? '📈 Доход' : '📉 Расход'}
+        </span>
+      );
+
+      return (
+        <div style={{ padding: '24px' }}>
+          {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+
+          {/* ── Шапка ── */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+            <div>
+              <div style={{ fontSize: '13px', color: COLORS.textSecondary, marginTop: '4px' }}>
+                Создайте шаблон один раз — применяйте в один клик
+              </div>
+            </div>
+            <Button onClick={() => setShowCreate(true)}>+ Создать шаблон</Button>
+          </div>
+
+          {/* ── Популярные шаблоны (если список пустой) ── */}
+          {!loading && templates.length === 0 && (
+            <div style={{ background: COLORS.white, borderRadius: '14px', padding: '24px', marginBottom: '24px', boxShadow: '0 1px 4px rgba(0,0,0,0.07)' }}>
+              <div style={{ fontWeight: 600, marginBottom: '14px', fontSize: '14px', color: COLORS.textSecondary }}>
+                💡 Популярные шаблоны — добавьте в один клик:
+              </div>
+              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                {POPULAR.map(p => (
+                  <button key={p.name} onClick={() => handleAddPopular(p)} style={{
+                    padding: '10px 16px', borderRadius: '10px', border: `1.5px solid ${COLORS.border}`,
+                    background: '#fff', cursor: 'pointer', fontFamily: 'Inter, sans-serif', textAlign: 'left',
+                    transition: 'all 0.15s',
+                  }}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.background = COLORS.blueLight; }}
+                    onMouseLeave={e => { e.currentTarget.style.borderColor = COLORS.border; e.currentTarget.style.background = '#fff'; }}
+                  >
+                    <div style={{ fontWeight: 600, fontSize: '13px', marginBottom: '2px' }}>{p.name}</div>
+                    <div style={{ fontSize: '12px', color: p.transaction_type === 'income' ? COLORS.green : COLORS.red, fontWeight: 600 }}>
+                      {p.transaction_type === 'income' ? '+' : '-'}{formatCurrency(p.amount)}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ── Сетка шаблонов ── */}
+          {loading ? <LoadingSpinner /> : templates.length === 0 ? (
+            <div style={{ background: COLORS.white, borderRadius: '14px', padding: '48px', textAlign: 'center', boxShadow: '0 1px 4px rgba(0,0,0,0.07)' }}>
+              <div style={{ fontSize: '40px', marginBottom: '12px' }}>📋</div>
+              <div style={{ fontWeight: 600, marginBottom: '6px' }}>Шаблонов пока нет</div>
+              <div style={{ fontSize: '13px', color: COLORS.textSecondary, marginBottom: '20px' }}>Создайте шаблон для часто повторяющихся операций</div>
+              <Button onClick={() => setShowCreate(true)}>Создать первый шаблон</Button>
+            </div>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '14px' }}>
+              {templates.map(tpl => {
+                const isApplying = applying === tpl.id;
+                return (
+                  <div key={tpl.id} style={{
+                    background: COLORS.white, borderRadius: '14px', padding: '20px',
+                    boxShadow: '0 1px 4px rgba(0,0,0,0.07)',
+                    border: `1px solid ${COLORS.border}`,
+                    display: 'flex', flexDirection: 'column', gap: '10px',
+                  }}>
+                    {/* Заголовок */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                      <div style={{ fontWeight: 700, fontSize: '15px' }}>{tpl.name}</div>
+                      <TypeBadge type={tpl.transaction_type} />
+                    </div>
+
+                    {/* Сумма */}
+                    <div style={{ fontSize: '24px', fontWeight: 800, color: tpl.transaction_type === 'income' ? COLORS.green : COLORS.red }}>
+                      {tpl.transaction_type === 'income' ? '+' : '-'}{formatCurrency(tpl.amount)}
+                    </div>
+
+                    {/* Детали */}
+                    {tpl.description && (
+                      <div style={{ fontSize: '13px', color: COLORS.textSecondary }}>{tpl.description}</div>
+                    )}
+                    {tpl.account_name && (
+                      <div style={{ fontSize: '12px', color: COLORS.textSecondary }}>💳 {tpl.account_name}</div>
+                    )}
+
+                    {/* Кнопки */}
+                    <div style={{ display: 'flex', gap: '8px', marginTop: 'auto', paddingTop: '8px', borderTop: `1px solid ${COLORS.border}` }}>
+                      <button onClick={() => handleApply(tpl)} disabled={isApplying}
+                        style={{
+                          flex: 1, padding: '10px', borderRadius: '8px', border: 'none',
+                          background: isApplying ? '#94a3b8' : COLORS.accent,
+                          color: '#fff', cursor: isApplying ? 'not-allowed' : 'pointer',
+                          fontWeight: 600, fontSize: '13px', fontFamily: 'Inter, sans-serif',
+                          transition: 'background 0.15s',
+                        }}
+                        onMouseEnter={e => { if (!isApplying) e.currentTarget.style.background = '#1d4ed8'; }}
+                        onMouseLeave={e => { if (!isApplying) e.currentTarget.style.background = COLORS.accent; }}
+                      >
+                        {isApplying ? '⏳ Создаю...' : '⚡ Применить'}
+                      </button>
+                      <button onClick={() => handleDelete(tpl.id)}
+                        style={{ padding: '10px 14px', borderRadius: '8px', border: `1px solid ${COLORS.redLight}`, background: COLORS.redLight, color: COLORS.red, cursor: 'pointer', fontSize: '13px', fontFamily: 'Inter, sans-serif' }}>
+                        ✕
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* ── Модалка создания ── */}
+          <Modal isOpen={showCreate} onClose={() => setShowCreate(false)} title="Новый шаблон операции">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <div>
+                <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>Название шаблона *</div>
+                <Input placeholder="Аренда офиса, Зарплата..." value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
+              </div>
+
+              <div>
+                <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>Тип операции</div>
+                <div style={{ display: 'flex', borderRadius: '8px', overflow: 'hidden', border: `1.5px solid ${COLORS.border}` }}>
+                  {[['expense','📉 Расход'],['income','📈 Доход']].map(([val, label]) => (
+                    <button key={val} onClick={() => setForm(f => ({ ...f, transaction_type: val }))} style={{
+                      flex: 1, padding: '10px', border: 'none', cursor: 'pointer', fontWeight: 600,
+                      fontSize: '13px', fontFamily: 'Inter, sans-serif', transition: 'all 0.15s',
+                      background: form.transaction_type === val ? (val === 'income' ? '#dcfce7' : '#fee2e2') : '#fff',
+                      color: form.transaction_type === val ? (val === 'income' ? COLORS.green : COLORS.red) : COLORS.textSecondary,
+                    }}>{label}</button>
+                  ))}
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: '12px' }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>Сумма, ₽ *</div>
+                  <Input type="number" placeholder="85000" value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>Счёт</div>
+                  <select value={form.account_id} onChange={e => setForm(f => ({ ...f, account_id: e.target.value }))}
+                    style={{ width: '100%', padding: '10px 12px', border: `1.5px solid ${COLORS.border}`, borderRadius: '8px', fontSize: '14px', fontFamily: 'Inter, sans-serif', background: '#fff' }}>
+                    <option value="">— Любой —</option>
+                    {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>Описание</div>
+                <Input placeholder="Ежемесячная аренда офиса на Садовой" value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} />
+              </div>
+
+              <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', paddingTop: '4px' }}>
+                <Button variant="outline" onClick={() => setShowCreate(false)}>Отмена</Button>
+                <Button onClick={handleCreate}>Создать шаблон</Button>
+              </div>
+            </div>
+          </Modal>
+        </div>
+      );
+    };
+
     // AI ПАРСЕР ТРАНЗАКЦИЙ
     // ─────────────────────────────────────────────────────────────────────────────
 
@@ -5211,6 +5463,7 @@
       const menuItems = [
         { label: '📊 Дашборд', hash: '#dashboard' },
         { label: '💳 Операции', hash: '#transactions' },
+        { label: '📋 Шаблоны', hash: '#templates' },
         { label: '📅 Календарь', hash: '#calendar' },
         { label: '📈 Отчёты', hash: '#reports' },
         { label: '🔬 Аналитика', hash: '#analytics' },
@@ -5487,6 +5740,7 @@
       const titles = {
         dashboard: '📊 Дашборд',
         transactions: '💳 Операции',
+        templates: '📋 Шаблоны операций',
         calendar: '📅 Платёжный календарь',
         reports: '📈 Отчёты',
         analytics: '🔬 Аналитика',
@@ -5546,6 +5800,7 @@
       const pageMap = {
         dashboard: <Dashboard />,
         transactions: <Transactions />,
+        templates: <TemplatesPage />,
         calendar: <Calendar />,
         reports: <Reports />,
         analytics: <AnalyticsPage />,
