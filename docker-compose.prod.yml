@@ -1,0 +1,65 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: planfact-db
+    restart: always
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-planfact}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./var/backups:/backups
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - planfact-network
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: planfact-api
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - ENVIRONMENT=production
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-planfact}
+      - POSTGRES_HOST=db
+      - POSTGRES_DB=${POSTGRES_DB:-planfact}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - SECRET_KEY=${SECRET_KEY}
+      - SENTRY_DSN=${SENTRY_DSN}
+      - CORS_ORIGINS=${CORS_ORIGINS}
+    volumes:
+      - ./var/backups:/app_root/var/backups
+      - ./logs:/app_root/logs
+    ports:
+      - "${API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - planfact-network
+    user: "1000:1000"
+
+volumes:
+  db_data:
+    driver: local
+
+networks:
+  planfact-network:
+    driver: bridge

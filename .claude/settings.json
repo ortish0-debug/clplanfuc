@@ -1,0 +1,8 @@
+{
+    "autoApprove": [
+        "Bash",
+        "Edit",
+        "Write",
+        "Read"
+    ]
+}

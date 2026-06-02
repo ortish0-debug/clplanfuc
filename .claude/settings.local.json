@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(docker compose up -d postgres)",
+      "PowerShell(New-Item -ItemType Directory -Force -Path \"static\")",
+      "PowerShell(.\\\\.venv\\\\Scripts\\\\pip.exe install pyjwt -q)",
+      "PowerShell(.\\\\.venv\\\\Scripts\\\\python.exe -c \"import jwt; print\\('? PyJWT v' + jwt.__version__\\)\" 2>&1)",
+      "PowerShell(python -m py_compile \"c:\\\\Users\\\\thero\\\\Desktop\\\\next-gen-planfact\\\\app\\\\main.py\")",
+      "Bash(git init *)",
+      "Bash(git remote *)",
+      "Bash(git config *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)"
+    ]
+  }
+}
