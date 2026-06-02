@@ -73,6 +73,14 @@ class TransactionCreate(BaseModel):
     payment_date: str  # YYYY-MM-DD
 
 
+class TransactionUpdate(BaseModel):
+    description: Optional[str] = None
+    amount: Optional[float] = None
+    transaction_type: Optional[str] = None
+    payment_date: Optional[str] = None
+    category_id: Optional[UUID] = None
+
+
 class TransactionResponse(BaseModel):
     id: UUID
     account_id: UUID
@@ -388,3 +396,111 @@ async def create_transaction(
     await db.commit()
 
     return {"id": str(transaction.id), "status": "created"}
+
+
+@router.patch(
+    "/companies/{company_id}/transactions/{transaction_id}",
+    response_model=dict,
+    summary="Редактировать транзакцию",
+)
+async def update_transaction(
+    company_id: UUID,
+    transaction_id: UUID,
+    body: TransactionUpdate,
+    current_user: CurrentUser = Depends(CanWriteFinance),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Обновить транзакцию с пересчётом баланса счёта."""
+    result = await db.execute(
+        select(Transaction).where(
+            and_(
+                Transaction.id == transaction_id,
+                Transaction.company_id == company_id,
+                Transaction.is_deleted.is_(False),
+            )
+        )
+    )
+    transaction = result.scalar_one_or_none()
+    if not transaction:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Транзакция не найдена")
+
+    acc_result = await db.execute(
+        select(Account).where(Account.id == transaction.account_id)
+    )
+    account = acc_result.scalar_one_or_none()
+
+    # Откатываем старый баланс
+    if account:
+        if transaction.transaction_type == TransactionType.INCOME:
+            account.current_balance -= transaction.amount
+        elif transaction.transaction_type == TransactionType.EXPENSE:
+            account.current_balance += transaction.amount
+
+    # Применяем изменения
+    if body.description is not None:
+        transaction.description = body.description
+    if body.amount is not None:
+        transaction.amount = Decimal(str(body.amount))
+        transaction.amount_base_currency = Decimal(str(body.amount))
+    if body.transaction_type is not None:
+        try:
+            transaction.transaction_type = TransactionType[body.transaction_type.upper()]
+        except KeyError:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Неверный тип транзакции")
+    if body.payment_date is not None:
+        transaction.payment_date = date.fromisoformat(body.payment_date)
+    if body.category_id is not None:
+        transaction.category_id = body.category_id
+
+    # Применяем новый баланс
+    if account:
+        if transaction.transaction_type == TransactionType.INCOME:
+            account.current_balance += transaction.amount
+        elif transaction.transaction_type == TransactionType.EXPENSE:
+            account.current_balance -= transaction.amount
+
+    await db.commit()
+    return {"status": "updated", "id": str(transaction_id)}
+
+
+@router.delete(
+    "/companies/{company_id}/transactions/{transaction_id}",
+    response_model=dict,
+    status_code=status.HTTP_200_OK,
+    summary="Удалить транзакцию",
+)
+async def delete_transaction(
+    company_id: UUID,
+    transaction_id: UUID,
+    current_user: CurrentUser = Depends(CanWriteFinance),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Мягкое удаление транзакции + откат баланса счёта."""
+    result = await db.execute(
+        select(Transaction).where(
+            and_(
+                Transaction.id == transaction_id,
+                Transaction.company_id == company_id,
+                Transaction.is_deleted.is_(False),
+            )
+        )
+    )
+    transaction = result.scalar_one_or_none()
+    if not transaction:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Транзакция не найдена")
+
+    # Откатываем баланс счёта
+    acc_result = await db.execute(
+        select(Account).where(Account.id == transaction.account_id)
+    )
+    account = acc_result.scalar_one_or_none()
+    if account:
+        if transaction.transaction_type == TransactionType.INCOME:
+            account.current_balance -= transaction.amount
+        elif transaction.transaction_type == TransactionType.EXPENSE:
+            account.current_balance += transaction.amount
+
+    transaction.is_deleted = True
+    await db.commit()
+
+    return {"status": "deleted", "id": str(transaction_id)}
