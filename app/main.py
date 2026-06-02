@@ -29,7 +29,7 @@ from sqlalchemy import text
 from sentry_sdk.integrations.fastapi import FastApiIntegration
 
 from app.infrastructure.api.v1.routers import (
-    accruals, ai_parser, alerts_advanced, advanced_analytics, analytics, assets, auth, balance_sheet, bank_auth, billing, budgets, bulk, compliance, counterparties, crm, crud_operations,
+    accruals, ai_parser, alerts_advanced, advanced_analytics, analytics, assets, auth, balance_sheet, bank_auth, billing, budgets, bulk, compliance, counterparties, crm, crm_deals, crud_operations, export,
     currency, directbank, disaster_recovery, documents, email_integration, fixed_assets, holdings, import_bank, integrations, integrations_advanced, inventory, ledger, loans,
     ml_reconciliation, mobile, mobile_advanced, onec, payment_requests, payroll, payroll_advanced, planning, production, projects, reports, russian_taxes, saas, taxes, tax_reports, team, warehouse, websockets,
 )
@@ -501,6 +501,16 @@ app.include_router(
 
 app.include_router(
     crm.router,
+    prefix=_API_PREFIX,
+)
+
+app.include_router(
+    crm_deals.router,
+    prefix=_API_PREFIX,
+)
+
+app.include_router(
+    export.router,
     prefix=_API_PREFIX,
 )
 
