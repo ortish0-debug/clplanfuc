@@ -54,6 +54,10 @@
       from { transform: rotate(0deg); }
       to { transform: rotate(360deg); }
     }
+    @keyframes pulse {
+      0%, 100% { opacity: 0.4; }
+      50% { opacity: 0.8; }
+    }
   </style>
 </head>
 <body>
@@ -144,6 +148,21 @@
         }
         return { success: false, error: errorMsg };
       }
+    };
+
+    // Хелпер для скачивания файлов с Authorization header
+    const downloadFile = async (url, filename) => {
+      const token = localStorage.getItem('pf_token');
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) throw new Error('Ошибка экспорта');
+      const blob = await res.blob();
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(link.href);
     };
 
     const AuthContext = createContext();
@@ -2460,144 +2479,248 @@
     };
 
     // ─────────────────────────────────────────────────────────────────────────────
-    // ЭКРАН: ДАШБОРД (с двумя новыми блоками внизу)
+    // ЭКРАН: ДАШБОРД
     // ─────────────────────────────────────────────────────────────────────────────
 
     const Dashboard = () => {
       const { companyId } = useAuth();
-      const [metrics, setMetrics] = useState(null);
-      const [cashflow, setCashflow] = useState(null);
+      const [loading, setLoading]         = useState(true);
+      const [curPl, setCurPl]             = useState(null);   // текущий месяц
+      const [prevPl, setPrevPl]           = useState(null);   // прошлый месяц
+      const [cashflow, setCashflow]       = useState(null);
+      const [forecast, setForecast]       = useState(null);
+      const [accounts, setAccounts]       = useState([]);
       const [transactions, setTransactions] = useState([]);
-      const [requests, setRequests] = useState([]);
+      const [monthly, setMonthly]         = useState(null);   // 6 мес для графика
+      const [crmStats, setCrmStats]       = useState(null);
+      const [alerts, setAlerts]           = useState({ unread_count: 0 });
       const chartRef = useRef(null);
-      const chartInstance = useRef(null);
+      const chartInst = useRef(null);
 
       useEffect(() => {
-        const fetchData = async () => {
-          const startDate = (() => { const d = new Date(); d.setMonth(d.getMonth() - 3); return d.toISOString().split('T')[0]; })();
-          const endDate = new Date().toISOString().split('T')[0];
-          const metricsRes = await apiCall('GET', `/companies/${companyId}/reports/pl?start_date=${startDate}&end_date=${endDate}`);
-          const cashflowRes = await apiCall('GET', `/companies/${companyId}/reports/cashflow?start_date=${startDate}&end_date=${endDate}`);
-          const txRes = await apiCall('GET', `/companies/${companyId}/transactions?limit=5`);
-          const reqRes = await apiCall('GET', `/companies/${companyId}/payment-requests?status=pending`);
+        const load = async () => {
+          setLoading(true);
+          const today = new Date();
+          // Текущий месяц
+          const curStart = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-01`;
+          const curEnd   = today.toISOString().split('T')[0];
+          // Прошлый месяц
+          const pm = new Date(today.getFullYear(), today.getMonth()-1, 1);
+          const prevStart = `${pm.getFullYear()}-${String(pm.getMonth()+1).padStart(2,'0')}-01`;
+          const lastDayPm = new Date(today.getFullYear(), today.getMonth(), 0);
+          const prevEnd   = lastDayPm.toISOString().split('T')[0];
 
-          if (metricsRes.success) setMetrics(metricsRes.data);
-          if (cashflowRes.success) setCashflow(cashflowRes.data);
-          if (txRes.success) {
-            const txList = txRes.data.value || txRes.data.transactions || txRes.data.items || txRes.data.results || (Array.isArray(txRes.data) ? txRes.data : []);
-            setTransactions(txList);
+          const [cp, pp, cf, fc, acc, tx, mo, cs, al] = await Promise.all([
+            apiCall('GET', `/companies/${companyId}/reports/pl?start_date=${curStart}&end_date=${curEnd}`),
+            apiCall('GET', `/companies/${companyId}/reports/pl?start_date=${prevStart}&end_date=${prevEnd}`),
+            apiCall('GET', `/companies/${companyId}/reports/cashflow?start_date=${curStart}&end_date=${curEnd}`),
+            apiCall('GET', `/companies/${companyId}/analytics/forecast?days=30`),
+            apiCall('GET', `/companies/${companyId}/accounts`),
+            apiCall('GET', `/companies/${companyId}/transactions?limit=6`),
+            apiCall('GET', `/companies/${companyId}/reports/monthly?months=6`),
+            apiCall('GET', `/companies/${companyId}/crm/deals`),
+            apiCall('GET', `/companies/${companyId}/alerts/triggered`),
+          ]);
+
+          if (cp.success) setCurPl(cp.data);
+          if (pp.success) setPrevPl(pp.data);
+          if (cf.success) setCashflow(cf.data);
+          if (fc.success) setForecast(fc.data);
+          if (acc.success) setAccounts(acc.data.accounts || []);
+          if (tx.success) setTransactions(Array.isArray(tx.data) ? tx.data : []);
+          if (mo.success) setMonthly(mo.data);
+          if (cs.success) {
+            const deals = cs.data.deals || [];
+            const pipeline = deals.filter(d => !['won','lost'].includes(d.status));
+            setCrmStats({
+              total: deals.length,
+              pipeline: pipeline.length,
+              pipelineValue: pipeline.reduce((s,d) => s + (parseFloat(d.amount)||0), 0),
+              won: deals.filter(d => d.status==='won').length,
+            });
           }
-          if (reqRes.success) {
-            const reqList = reqRes.data['payment-requests'] || reqRes.data.requests || reqRes.data.items || reqRes.data.results || (Array.isArray(reqRes.data) ? reqRes.data : []);
-            setRequests(reqList);
-          }
+          if (al.success) setAlerts(al.data);
+          setLoading(false);
         };
-        fetchData();
+        if (companyId) load();
       }, [companyId]);
 
+      // Рисуем график после загрузки monthly
       useEffect(() => {
-        if (!cashflow || !chartRef.current) return;
-        const labels = cashflow.periods || ['Янв', 'Фев', 'Мар', 'Апр', 'Май', 'Июн'];
-        const revenue = cashflow.revenue_by_period || [50000, 60000, 55000, 70000, 65000, 75000];
-        const expenses = cashflow.expenses_by_period || [30000, 35000, 32000, 40000, 38000, 42000];
-
-        if (chartInstance.current) chartInstance.current.destroy();
-
+        if (!monthly || !chartRef.current) return;
+        if (chartInst.current) chartInst.current.destroy();
         const ctx = chartRef.current.getContext('2d');
-        chartInstance.current = new Chart(ctx, {
+        chartInst.current = new Chart(ctx, {
           type: 'bar',
           data: {
-            labels,
+            labels: monthly.months.map(m => m.label),
             datasets: [
-              { label: 'Доходы', data: revenue, backgroundColor: COLORS.accent, borderRadius: 6 },
-              { label: 'Расходы', data: expenses, backgroundColor: '#f87171', borderRadius: 6 },
+              { label: 'Доходы',  data: monthly.months.map(m => m.revenue),    backgroundColor: '#3b82f6', borderRadius: 5 },
+              { label: 'Расходы', data: monthly.months.map(m => m.expenses),   backgroundColor: '#f87171', borderRadius: 5 },
+              { label: 'Прибыль', data: monthly.months.map(m => m.net_income), backgroundColor: '#4ade80', borderRadius: 5 },
             ],
           },
           options: {
-            responsive: true,
-            maintainAspectRatio: true,
-            plugins: { legend: { position: 'top', labels: { font: { size: 12 }, padding: 16, boxWidth: 12 } } },
-            scales: { y: { beginAtZero: true } },
+            responsive: true, maintainAspectRatio: true,
+            plugins: {
+              legend: { position: 'top', labels: { font: { size: 12 }, padding: 12, boxWidth: 12 } },
+              tooltip: { callbacks: { label: c => `${c.dataset.label}: ${new Intl.NumberFormat('ru-RU',{style:'currency',currency:'RUB',maximumFractionDigits:0}).format(c.raw)}` } },
+            },
+            scales: { y: { beginAtZero: true, ticks: { callback: v => new Intl.NumberFormat('ru-RU',{notation:'compact'}).format(v)+'₽' } } },
           },
         });
+        return () => { if (chartInst.current) chartInst.current.destroy(); };
+      }, [monthly]);
 
-        return () => {
-          if (chartInstance.current) chartInstance.current.destroy();
-        };
-      }, [cashflow]);
+      // % изменение м/м
+      const pct = (cur, prev) => {
+        if (!prev || prev === 0) return null;
+        const diff = ((cur - prev) / Math.abs(prev)) * 100;
+        return { val: diff, label: (diff >= 0 ? '+' : '') + diff.toFixed(1) + '%', pos: diff >= 0 };
+      };
 
-      if (!metrics) return <LoadingSpinner />;
+      if (loading) return <div style={{ padding: '32px' }}><LoadingSpinner /></div>;
 
-      const cards = [
-        { icon: '📈', title: 'Доходы', value: metrics.revenue || 0, change: '+12%', bgColor: COLORS.greenLight, iconColor: COLORS.green, valueColor: COLORS.green },
-        { icon: '📉', title: 'Расходы', value: metrics.opex || 0, change: '-8%', bgColor: COLORS.redLight, iconColor: COLORS.red, valueColor: COLORS.red },
-        { icon: '◆', title: 'Прибыль', value: metrics.net_income || 0, change: '+15%', bgColor: COLORS.blueLight, iconColor: COLORS.accent, valueColor: COLORS.accent },
-        { icon: '⚖', title: 'Баланс', value: cashflow?.closing_balance || 0, change: '0%', bgColor: COLORS.grayLight, iconColor: COLORS.text, valueColor: COLORS.text },
-      ];
+      const totalBalance = accounts.reduce((s, a) => s + parseFloat(a.current_balance || 0), 0);
+      const revChg  = pct(curPl?.revenue || 0,    prevPl?.revenue || 0);
+      const expChg  = pct(curPl?.opex || 0,       prevPl?.opex || 0);
+      const profChg = pct(curPl?.net_income || 0, prevPl?.net_income || 0);
+
+      const KpiCard = ({ icon, title, value, change, valueColor, accent }) => (
+        <div style={{ background: COLORS.white, borderRadius: '14px', padding: '22px', border: `1px solid ${COLORS.border}`, boxShadow: '0 1px 3px rgba(0,0,0,0.05)', flex: 1, minWidth: '180px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+            <div style={{ fontSize: '24px', marginBottom: '10px' }}>{icon}</div>
+            {change && (
+              <span style={{ fontSize: '12px', fontWeight: 600, color: change.pos ? COLORS.green : COLORS.red, background: change.pos ? COLORS.greenLight : COLORS.redLight, padding: '3px 8px', borderRadius: '10px' }}>
+                {change.label}
+              </span>
+            )}
+          </div>
+          <div style={{ color: COLORS.textSecondary, fontSize: '13px', marginBottom: '6px' }}>{title}</div>
+          <div style={{ fontSize: '26px', fontWeight: 700, color: valueColor || COLORS.text }}>{formatCurrency(value)}</div>
+          {change && <div style={{ fontSize: '11px', color: COLORS.textSecondary, marginTop: '4px' }}>vs прошлый месяц</div>}
+        </div>
+      );
 
       return (
-        <div style={{ padding: '32px' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '20px', marginBottom: '32px' }}>
-            {cards.map((card, i) => (
-              <div key={i} style={{ background: COLORS.white, borderRadius: '12px', padding: '24px', border: `1px solid ${COLORS.border}`, boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
-                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
-                  <div>
-                    <div style={{ width: '40px', height: '40px', borderRadius: '8px', background: card.bgColor, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '20px', marginBottom: '12px' }}>{card.icon}</div>
-                    <div style={{ color: COLORS.textSecondary, fontSize: '13px', marginBottom: '8px' }}>{card.title}</div>
-                    <div style={{ fontSize: '28px', fontWeight: 700, color: card.valueColor }}>{formatCurrency(card.value)}</div>
-                  </div>
-                  <div style={{ color: COLORS.green, fontSize: '12px', fontWeight: 600 }}>{card.change}</div>
+        <div style={{ padding: '24px' }}>
+
+          {/* ── Строка 1: KPI карточки ── */}
+          <div style={{ display: 'flex', gap: '14px', marginBottom: '20px', flexWrap: 'wrap' }}>
+            <KpiCard icon="📈" title="Выручка (месяц)"  value={curPl?.revenue || 0}    change={revChg}  valueColor={COLORS.green} />
+            <KpiCard icon="📉" title="Расходы (месяц)"  value={curPl?.opex || 0}       change={expChg}  valueColor={COLORS.red} />
+            <KpiCard icon="💎" title="Прибыль (месяц)"  value={curPl?.net_income || 0} change={profChg} valueColor={curPl?.net_income >= 0 ? COLORS.green : COLORS.red} />
+            <KpiCard icon="🏦" title="Общий баланс"     value={totalBalance}           valueColor={totalBalance >= 0 ? COLORS.text : COLORS.red} />
+          </div>
+
+          {/* ── Строка 2: График + правая панель ── */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: '14px', marginBottom: '20px' }}>
+            <div style={{ background: COLORS.white, borderRadius: '14px', padding: '22px', border: `1px solid ${COLORS.border}` }}>
+              <div style={{ fontWeight: 600, marginBottom: '16px', fontSize: '15px' }}>Доходы / Расходы / Прибыль по месяцам</div>
+              <canvas ref={chartRef} style={{ maxHeight: '240px' }} />
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              {/* Прогноз */}
+              {forecast && (
+                <div style={{ background: COLORS.white, borderRadius: '14px', padding: '18px', border: `1px solid ${COLORS.border}` }}>
+                  <div style={{ fontWeight: 600, fontSize: '13px', marginBottom: '12px' }}>🔮 Прогноз 30 дней</div>
+                  {[
+                    { l: 'Баланс сейчас', v: formatCurrency(forecast.current_balance) },
+                    { l: 'Прогноз', v: formatCurrency(forecast.forecasted_balance), c: forecast.forecasted_balance >= 0 ? COLORS.green : COLORS.red },
+                    { l: 'Burn rate', v: formatCurrency(forecast.burn_rate), c: COLORS.red },
+                  ].map(({ l, v, c }) => (
+                    <div key={l} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', marginBottom: '6px' }}>
+                      <span style={{ color: COLORS.textSecondary }}>{l}</span>
+                      <span style={{ fontWeight: 600, color: c || COLORS.text }}>{v}</span>
+                    </div>
+                  ))}
+                  {forecast.cash_gap_risk && (
+                    <div style={{ marginTop: '8px', padding: '6px 10px', background: '#fef2f2', borderRadius: '6px', fontSize: '12px', color: COLORS.red, fontWeight: 500 }}>
+                      ⚠️ Риск кассового разрыва
+                    </div>
+                  )}
                 </div>
+              )}
+
+              {/* CRM + Алерты */}
+              <div style={{ background: COLORS.white, borderRadius: '14px', padding: '18px', border: `1px solid ${COLORS.border}` }}>
+                <div style={{ fontWeight: 600, fontSize: '13px', marginBottom: '12px' }}>📊 Сводка</div>
+                {[
+                  { l: '🎯 Сделок в воронке', v: crmStats?.pipeline ?? '—', href: '#crm' },
+                  { l: '💰 Сумма воронки', v: crmStats ? formatCurrency(crmStats.pipelineValue) : '—', href: '#crm' },
+                  { l: '🏆 Закрыто сделок', v: crmStats?.won ?? '—', href: '#crm' },
+                  { l: '🔔 Непрочитанных алертов', v: alerts.unread_count || 0, href: '#alerts', warn: (alerts.unread_count || 0) > 0 },
+                ].map(({ l, v, href, warn }) => (
+                  <div key={l} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', marginBottom: '7px' }}>
+                    <a href={href} style={{ color: COLORS.textSecondary, textDecoration: 'none' }}>{l}</a>
+                    <span style={{ fontWeight: 600, color: warn ? COLORS.red : COLORS.text }}>{v}</span>
+                  </div>
+                ))}
               </div>
-            ))}
+            </div>
           </div>
 
-          <div style={{ background: COLORS.white, borderRadius: '12px', padding: '24px', border: `1px solid ${COLORS.border}`, marginBottom: '32px' }}>
-            <h3 style={{ fontSize: '16px', fontWeight: 600, marginBottom: '20px' }}>Доходы и расходы</h3>
-            <canvas ref={chartRef} style={{ maxHeight: '280px' }} />
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '60% 40%', gap: '32px' }}>
-            <div style={{ background: COLORS.white, borderRadius: '12px', padding: '24px', border: `1px solid ${COLORS.border}` }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                <h3 style={{ fontSize: '16px', fontWeight: 600 }}>Последние операции</h3>
-                <a href="#transactions" style={{ color: COLORS.accent, textDecoration: 'none', fontSize: '13px', fontWeight: 500 }}>Все операции →</a>
+          {/* ── Строка 3: Счета + Последние операции ── */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
+            {/* Счета */}
+            <div style={{ background: COLORS.white, borderRadius: '14px', padding: '22px', border: `1px solid ${COLORS.border}` }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+                <div style={{ fontWeight: 600, fontSize: '15px' }}>🏦 Счета</div>
+                <a href="#settings" style={{ color: COLORS.accent, textDecoration: 'none', fontSize: '13px' }}>Управление →</a>
               </div>
-              {transactions.length === 0 ? (
-                <div style={{ color: COLORS.textSecondary, textAlign: 'center', padding: '32px 0' }}>Операций нет</div>
+              {accounts.length === 0 ? (
+                <div style={{ color: COLORS.textSecondary, textAlign: 'center', padding: '20px 0', fontSize: '13px' }}>Счетов нет</div>
               ) : (
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
-                  <tbody>
-                    {transactions.map((tx, i) => {
-                      const txType = (tx.transaction_type || tx.type || '').toLowerCase();
-                      const isIncome = txType === 'income';
-                      return (
-                        <tr key={i} style={{ borderBottom: `1px solid ${COLORS.border}` }}>
-                          <td style={{ padding: '8px 0' }}>{tx.description && !tx.description.match(/^\?+$/) ? tx.description : (tx.category_name || 'Операция')}</td>
-                          <td style={{ textAlign: 'right', fontWeight: 600, color: isIncome ? COLORS.green : COLORS.red }}>{isIncome ? '+' : '-'}{formatCurrency(Math.abs(tx.amount))}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  {accounts.map(acc => {
+                    const bal = parseFloat(acc.current_balance || 0);
+                    const typeIcon = { CHECKING: '🏛', CASH: '💵', SAVINGS: '🐷', CREDIT: '💳', INVESTMENT: '📈' }[acc.account_type?.toUpperCase()] || '🏦';
+                    return (
+                      <div key={acc.id} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '10px 12px', borderRadius: '8px', background: COLORS.grayLight }}>
+                        <span style={{ fontSize: '20px' }}>{typeIcon}</span>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: '13px', fontWeight: 500 }}>{acc.name}</div>
+                          <div style={{ fontSize: '11px', color: COLORS.textSecondary }}>{acc.currency}</div>
+                        </div>
+                        <div style={{ fontWeight: 700, color: bal >= 0 ? COLORS.text : COLORS.red, fontSize: '14px' }}>
+                          {formatCurrency(bal)}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  <div style={{ borderTop: `1px solid ${COLORS.border}`, paddingTop: '10px', display: 'flex', justifyContent: 'space-between', fontSize: '14px', fontWeight: 700 }}>
+                    <span>Итого</span>
+                    <span style={{ color: totalBalance >= 0 ? COLORS.green : COLORS.red }}>{formatCurrency(totalBalance)}</span>
+                  </div>
+                </div>
               )}
             </div>
 
-            <div style={{ background: COLORS.white, borderRadius: '12px', padding: '24px', border: `1px solid ${COLORS.border}` }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                <h3 style={{ fontSize: '16px', fontWeight: 600 }}>Заявки на оплату</h3>
-                <a href="#payment-requests" style={{ color: COLORS.accent, textDecoration: 'none', fontSize: '13px', fontWeight: 500 }}>Все заявки →</a>
+            {/* Последние операции */}
+            <div style={{ background: COLORS.white, borderRadius: '14px', padding: '22px', border: `1px solid ${COLORS.border}` }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+                <div style={{ fontWeight: 600, fontSize: '15px' }}>💳 Последние операции</div>
+                <a href="#transactions" style={{ color: COLORS.accent, textDecoration: 'none', fontSize: '13px' }}>Все →</a>
               </div>
-              {requests.length === 0 ? (
-                <div style={{ color: COLORS.textSecondary, textAlign: 'center', padding: '32px 0' }}>Ожидающих заявок нет</div>
+              {transactions.length === 0 ? (
+                <div style={{ color: COLORS.textSecondary, textAlign: 'center', padding: '20px 0', fontSize: '13px' }}>Операций нет</div>
               ) : (
-                <div>
-                  {requests.map((r, i) => (
-                    <div key={i} style={{ padding: '8px 0', borderBottom: `1px solid ${COLORS.border}`, display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                      <span>{r.description}</span>
-                      <span style={{ fontWeight: 600, color: COLORS.yellow }}>{formatCurrency(r.amount)}</span>
-                    </div>
-                  ))}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                  {transactions.map((tx, i) => {
+                    const isIncome = (tx.transaction_type || '').toLowerCase() === 'income';
+                    return (
+                      <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: i < transactions.length-1 ? `1px solid ${COLORS.border}` : 'none' }}>
+                        <div>
+                          <div style={{ fontSize: '13px', fontWeight: 500 }}>{tx.description || 'Операция'}</div>
+                          <div style={{ fontSize: '11px', color: COLORS.textSecondary }}>{(tx.payment_date || '').split('T')[0]}</div>
+                        </div>
+                        <span style={{ fontWeight: 700, fontSize: '14px', color: isIncome ? COLORS.green : COLORS.red }}>
+                          {isIncome ? '+' : '-'}{formatCurrency(Math.abs(parseFloat(tx.amount)||0))}
+                        </span>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -2614,6 +2737,7 @@
       const [showImportModal, setShowImportModal] = useState(false);
       const [showParserModal, setShowParserModal] = useState(false);
       const [toast, setToast] = useState(null);
+      const [editingTx, setEditingTx] = useState(null);
       const [formData, setFormData] = useState({ date: new Date().toISOString().split('T')[0], description: '', amount: '', type: 'expense', account_id: '' });
       const getFromDate = () => { const d = new Date(); d.setMonth(d.getMonth() - 3); return d.toISOString().split('T')[0]; };
       const [fromDate, setFromDate] = useState(getFromDate());
@@ -2689,6 +2813,46 @@
         }
       };
 
+      const openEdit = (tx) => {
+        setEditingTx(tx);
+        setFormData({
+          date: (tx.payment_date || '').split('T')[0],
+          description: tx.description || '',
+          amount: String(Math.abs(parseFloat(tx.amount) || 0)),
+          type: (tx.transaction_type || 'expense').toLowerCase() === 'income' ? 'income' : 'expense',
+          account_id: tx.account_id || '',
+        });
+        setShowModal(true);
+      };
+
+      const handleSaveTransaction = async () => {
+        if (!formData.description || !formData.amount) {
+          setToast({ type: 'error', message: 'Заполните все поля' }); return;
+        }
+
+        if (editingTx) {
+          // Редактирование
+          const payload = {
+            description: formData.description,
+            amount: parseFloat(formData.amount),
+            transaction_type: formData.type === 'income' ? 'INCOME' : 'EXPENSE',
+            payment_date: formData.date,
+          };
+          const res = await apiCall('PATCH', `/companies/${companyId}/transactions/${editingTx.id}`, payload);
+          if (res.success) {
+            setToast({ type: 'success', message: 'Операция обновлена' });
+            setShowModal(false); setEditingTx(null);
+            setFormData({ date: new Date().toISOString().split('T')[0], description: '', amount: '', type: 'expense', account_id: '' });
+            fetchTransactions();
+          } else {
+            setToast({ type: 'error', message: res.error });
+          }
+        } else {
+          // Создание
+          handleAddTransaction();
+        }
+      };
+
       const handleImport = async () => {
         if (!importFile) {
           setToast({ type: 'error', message: 'Выберите файл' });
@@ -2755,6 +2919,15 @@
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
             <h2 style={{ fontSize: '24px', fontWeight: 600 }}>Операции</h2>
             <div style={{ display: 'flex', gap: '12px' }}>
+              <Button variant="outline" onClick={async () => {
+                try {
+                  const today = new Date().toISOString().split('T')[0];
+                  await downloadFile(
+                    `/api/v1/companies/${companyId}/export/transactions/csv?start_date=${fromDate}&end_date=${toDate}`,
+                    `transactions_${fromDate}_${toDate}.csv`
+                  );
+                } catch(e) { alert('Ошибка экспорта: ' + e.message); }
+              }}>📥 CSV</Button>
               <Button variant="outline" onClick={() => setShowImportModal(true)}>📥 Импорт 1С</Button>
               <Button variant="outline" onClick={() => setShowParserModal(true)}>🤖 AI парсер</Button>
               <Button onClick={() => setShowModal(true)}>+ Добавить</Button>
@@ -2813,7 +2986,10 @@
                           </span>
                         </td>
                         <td style={{ padding: '12px 16px', textAlign: 'center', fontSize: '14px' }}>
-                          <button onClick={() => handleDelete(tx.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '16px', color: COLORS.red }}>🗑️</button>
+                          <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
+                            <button onClick={() => openEdit(tx)} title="Редактировать" style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '16px', color: COLORS.accent }}>✎</button>
+                            <button onClick={() => handleDelete(tx.id)} title="Удалить" style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '16px', color: COLORS.red }}>🗑️</button>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -2823,7 +2999,7 @@
             </div>
           )}
 
-          <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Добавить операцию">
+          <Modal isOpen={showModal} onClose={() => { setShowModal(false); setEditingTx(null); setFormData({ date: new Date().toISOString().split('T')[0], description: '', amount: '', type: 'expense', account_id: '' }); }} title={editingTx ? '✎ Редактировать операцию' : '+ Добавить операцию'}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
               <div>
                 <label style={{ display: 'block', marginBottom: '8px', fontWeight: 500 }}>Дата</label>
@@ -2844,16 +3020,18 @@
                   <option value="income">📈 Доход</option>
                 </select>
               </div>
-              <div>
-                <label style={{ display: 'block', marginBottom: '8px', fontWeight: 500 }}>Счёт *</label>
-                <select value={formData.account_id} onChange={(e) => setFormData({ ...formData, account_id: e.target.value })} style={{ width: '100%', padding: '10px 14px', border: `1.5px solid ${COLORS.border}`, borderRadius: '8px', fontSize: '14px', fontFamily: 'Inter, sans-serif' }}>
-                  <option value="">— Выбрать счёт —</option>
-                  {accounts.map(acc => <option key={acc.id} value={acc.id}>{acc.name}</option>)}
-                </select>
-              </div>
+              {!editingTx && (
+                <div>
+                  <label style={{ display: 'block', marginBottom: '8px', fontWeight: 500 }}>Счёт *</label>
+                  <select value={formData.account_id} onChange={(e) => setFormData({ ...formData, account_id: e.target.value })} style={{ width: '100%', padding: '10px 14px', border: `1.5px solid ${COLORS.border}`, borderRadius: '8px', fontSize: '14px', fontFamily: 'Inter, sans-serif' }}>
+                    <option value="">— Выбрать счёт —</option>
+                    {accounts.map(acc => <option key={acc.id} value={acc.id}>{acc.name}</option>)}
+                  </select>
+                </div>
+              )}
               <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', marginTop: '16px' }}>
-                <Button variant="outline" onClick={() => setShowModal(false)}>Отмена</Button>
-                <Button onClick={handleAddTransaction}>Сохранить</Button>
+                <Button variant="outline" onClick={() => { setShowModal(false); setEditingTx(null); setFormData({ date: new Date().toISOString().split('T')[0], description: '', amount: '', type: 'expense', account_id: '' }); }}>Отмена</Button>
+                <Button onClick={handleSaveTransaction}>{editingTx ? 'Сохранить' : 'Добавить'}</Button>
               </div>
             </div>
           </Modal>
@@ -3018,7 +3196,20 @@
 
       return (
         <div style={{ padding: '32px' }}>
-          <h2 style={{ fontSize: '24px', fontWeight: 600, marginBottom: '24px' }}>Отчёты</h2>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+            <h2 style={{ fontSize: '24px', fontWeight: 600 }}>Отчёты</h2>
+            <button onClick={async () => {
+              try {
+                const today = new Date();
+                const start = `${today.getFullYear()}-01-01`;
+                const end   = today.toISOString().split('T')[0];
+                const fname = `planfact_report_${end.replace(/-/g,'')}.xlsx`;
+                await downloadFile(`/api/v1/companies/${companyId}/export/reports/xlsx?start_date=${start}&end_date=${end}`, fname);
+              } catch(e) { alert('Ошибка: ' + e.message); }
+            }} style={{ padding: '9px 18px', borderRadius: '8px', border: `1.5px solid ${COLORS.border}`, background: '#fff', cursor: 'pointer', fontWeight: 500, fontSize: '14px', fontFamily: 'Inter, sans-serif', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              📊 Скачать Excel
+            </button>
+          </div>
 
           <div style={{ display: 'flex', gap: '12px', marginBottom: '24px' }}>
             {['cashflow', 'pl', 'balance'].map((t) => (
@@ -3659,6 +3850,1083 @@
     };
 
     // Сайдбар с новыми пунктами
+    // ─────────────────────────────────────────────────────────────────────────────
+    // AI ПАРСЕР ТРАНЗАКЦИЙ
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    const AIParserPage = () => {
+      const { companyId } = useAuth();
+      const [text, setText] = useState('');
+      const [accountId, setAccountId] = useState('');
+      const [paymentDate, setPaymentDate] = useState(new Date().toISOString().split('T')[0]);
+      const [accounts, setAccounts] = useState([]);
+      const [loading, setLoading] = useState(false);
+      const [result, setResult] = useState(null);
+      const [error, setError] = useState(null);
+      const [history, setHistory] = useState([]);
+
+      const EXAMPLES = [
+        'Аренда офиса за июнь 85 000 рублей ООО Бизнес-Центр',
+        'Поступление от клиента ИП Петров предоплата 120000р',
+        'СМС Сбербанк: списание 4500р OZON MARKET 02.06.2026',
+      ];
+
+      useEffect(() => {
+        const load = async () => {
+          const res = await apiCall('get', `/companies/${companyId}/accounts`);
+          if (res.success) {
+            const accs = res.data.accounts || [];
+            setAccounts(accs);
+            if (accs.length > 0) setAccountId(accs[0].id);
+          }
+        };
+        if (companyId) load();
+      }, [companyId]);
+
+      const handleSubmit = async () => {
+        if (!text.trim() || !accountId) return;
+        setLoading(true);
+        setResult(null);
+        setError(null);
+        const res = await apiCall('post', `/companies/${companyId}/transactions/parse-raw`, {
+          raw_text: text.trim(),
+          account_id: accountId,
+          payment_date: paymentDate,
+        });
+        setLoading(false);
+        if (res.success) {
+          setResult(res.data);
+          setHistory(prev => [res.data, ...prev].slice(0, 5));
+        } else {
+          setError(res.error || 'Ошибка AI-парсера');
+        }
+      };
+
+      const handleReset = () => {
+        setText('');
+        setResult(null);
+        setError(null);
+      };
+
+      const typeBadge = (type) => {
+        const map = {
+          income:   { bg: '#dcfce7', color: '#16a34a', label: '📈 Доход' },
+          expense:  { bg: '#fee2e2', color: '#dc2626', label: '📉 Расход' },
+          transfer: { bg: '#eff6ff', color: '#2563eb', label: '↔️ Перевод' },
+        };
+        return map[type] || map.expense;
+      };
+
+      const confidenceColor = (score) => {
+        if (score >= 0.7) return '#16a34a';
+        if (score >= 0.4) return '#f59e0b';
+        return '#dc2626';
+      };
+
+      const selectedAccount = accounts.find(a => a.id === accountId);
+
+      return (
+        <div style={{ padding: '24px' }}>
+          <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', alignItems: 'flex-start' }}>
+
+            {/* ── ЛЕВАЯ КОЛОНКА: форма ── */}
+            <div style={{ flex: 1, minWidth: '360px' }}>
+              <div style={{ background: COLORS.white, borderRadius: '16px', padding: '28px', boxShadow: '0 1px 4px rgba(0,0,0,0.08)' }}>
+                <div style={{ marginBottom: '20px' }}>
+                  <div style={{ fontSize: '18px', fontWeight: 700, marginBottom: '6px' }}>🤖 AI распознаёт транзакцию из любого текста</div>
+                  <div style={{ fontSize: '13px', color: COLORS.textSecondary, lineHeight: 1.5 }}>
+                    Вставьте выписку банка, опишите операцию словами или скопируйте SMS — AI сам определит сумму, тип и категорию
+                  </div>
+                </div>
+
+                {/* Textarea */}
+                <div style={{ position: 'relative', marginBottom: '16px' }}>
+                  <textarea
+                    value={text}
+                    onChange={(e) => setText(e.target.value.slice(0, 2000))}
+                    placeholder={'Оплата ООО Ромашка за поставку канцтоваров 15 000 руб 12.05.2026\nПолучили от клиента Иванов предоплату 50000 за разработку\nСМС: Оплата 3500р MAGNIT 02.06.26'}
+                    style={{
+                      width: '100%', minHeight: '130px', padding: '14px',
+                      border: `1.5px solid ${text.length > 0 ? COLORS.accent : COLORS.border}`,
+                      borderRadius: '10px', fontSize: '14px', fontFamily: 'Inter, sans-serif',
+                      resize: 'vertical', boxSizing: 'border-box', lineHeight: 1.6,
+                      transition: 'border-color 0.2s', outline: 'none',
+                    }}
+                    onFocus={e => e.target.style.borderColor = COLORS.accent}
+                    onBlur={e => e.target.style.borderColor = text.length > 0 ? COLORS.accent : COLORS.border}
+                  />
+                  <div style={{ position: 'absolute', bottom: '8px', right: '12px', fontSize: '11px', color: text.length > 1800 ? COLORS.red : COLORS.textSecondary }}>
+                    {text.length} / 2000
+                  </div>
+                </div>
+
+                {/* Примеры */}
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' }}>
+                  {EXAMPLES.map((ex, i) => (
+                    <button key={i} onClick={() => setText(ex)}
+                      style={{ padding: '5px 12px', borderRadius: '20px', background: '#eff6ff', color: COLORS.accent,
+                        cursor: 'pointer', fontSize: '12px', border: '1px solid #bfdbfe', fontFamily: 'Inter, sans-serif' }}>
+                      {['📄','💰','📱'][i]} Пример {i + 1}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Счёт + Дата */}
+                <div style={{ display: 'flex', gap: '12px', marginBottom: '20px', flexWrap: 'wrap' }}>
+                  <div style={{ flex: 1, minWidth: '160px' }}>
+                    <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>Счёт</div>
+                    <select value={accountId} onChange={e => setAccountId(e.target.value)}
+                      style={{ width: '100%', padding: '10px 12px', border: `1.5px solid ${COLORS.border}`,
+                        borderRadius: '8px', fontSize: '13px', fontFamily: 'Inter, sans-serif', background: '#fff' }}>
+                      {accounts.map(a => (
+                        <option key={a.id} value={a.id}>
+                          💳 {a.name} · {formatCurrency(parseFloat(a.current_balance))}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div style={{ flex: 1, minWidth: '140px' }}>
+                    <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>Дата</div>
+                    <Input type="date" value={paymentDate} onChange={e => setPaymentDate(e.target.value)} />
+                  </div>
+                </div>
+
+                {/* Кнопка */}
+                <button
+                  onClick={handleSubmit}
+                  disabled={!text.trim() || !accountId || loading}
+                  style={{
+                    width: '100%', padding: '14px', borderRadius: '10px', border: 'none',
+                    background: !text.trim() || !accountId || loading ? '#94a3b8' : COLORS.accent,
+                    color: '#fff', fontSize: '16px', fontWeight: 600, cursor: !text.trim() || !accountId || loading ? 'not-allowed' : 'pointer',
+                    fontFamily: 'Inter, sans-serif', transition: 'background 0.2s',
+                  }}>
+                  {loading ? '⏳ AI анализирует...' : '🤖 Разобрать с AI'}
+                </button>
+              </div>
+
+              {/* История сессии */}
+              {history.length > 0 && (
+                <div style={{ marginTop: '20px', background: COLORS.white, borderRadius: '16px', padding: '20px', boxShadow: '0 1px 4px rgba(0,0,0,0.08)' }}>
+                  <div style={{ fontSize: '12px', color: COLORS.textSecondary, fontWeight: 600, marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                    История сессии
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {history.map((h, i) => {
+                      const badge = typeBadge(h.transaction_type);
+                      return (
+                        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 0', borderBottom: i < history.length - 1 ? `1px solid ${COLORS.border}` : 'none' }}>
+                          <span style={{ padding: '3px 8px', borderRadius: '12px', fontSize: '11px', fontWeight: 600, background: badge.bg, color: badge.color, whiteSpace: 'nowrap' }}>
+                            {badge.label}
+                          </span>
+                          <span style={{ flex: 1, fontSize: '13px', color: COLORS.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {h.description}
+                          </span>
+                          <span style={{ fontSize: '13px', fontWeight: 600, color: h.transaction_type === 'income' ? COLORS.green : COLORS.red, whiteSpace: 'nowrap' }}>
+                            {h.transaction_type === 'income' ? '+' : '-'}{formatCurrency(parseFloat(h.amount))}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* ── ПРАВАЯ КОЛОНКА: результат ── */}
+            <div style={{ flex: 1, minWidth: '320px' }}>
+
+              {/* Пустое состояние */}
+              {!loading && !result && !error && (
+                <div style={{
+                  border: `2px dashed ${COLORS.border}`, borderRadius: '16px', minHeight: '300px',
+                  display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                  padding: '40px', textAlign: 'center', background: COLORS.grayLight,
+                }}>
+                  <div style={{ fontSize: '48px', marginBottom: '16px' }}>✨</div>
+                  <div style={{ fontWeight: 600, fontSize: '16px', marginBottom: '8px' }}>Введите текст слева</div>
+                  <div style={{ color: COLORS.textSecondary, fontSize: '13px', lineHeight: 1.5 }}>
+                    AI мгновенно распознает операцию — сумму, тип, контрагента и категорию
+                  </div>
+                </div>
+              )}
+
+              {/* Скелетон загрузки */}
+              {loading && (
+                <div style={{ background: COLORS.white, borderRadius: '16px', padding: '28px', boxShadow: '0 4px 20px rgba(37,99,235,0.1)' }}>
+                  <div style={{ textAlign: 'center', marginBottom: '24px', color: COLORS.accent, fontWeight: 600 }}>🤖 AI анализирует текст...</div>
+                  {[80, 60, 90, 50].map((w, i) => (
+                    <div key={i} style={{
+                      height: '14px', borderRadius: '7px', marginBottom: '14px',
+                      width: `${w}%`, background: COLORS.border,
+                      animation: 'pulse 1.5s ease-in-out infinite',
+                      animationDelay: `${i * 0.15}s`,
+                    }} />
+                  ))}
+                </div>
+              )}
+
+              {/* Ошибка */}
+              {error && !loading && (
+                <div style={{ background: '#fef2f2', border: '2px solid #fca5a5', borderRadius: '16px', padding: '28px', textAlign: 'center' }}>
+                  <div style={{ fontSize: '40px', marginBottom: '12px' }}>⚠️</div>
+                  <div style={{ fontWeight: 600, color: COLORS.red, marginBottom: '8px' }}>Не удалось разобрать</div>
+                  <div style={{ fontSize: '13px', color: '#b91c1c', marginBottom: '20px' }}>{error}</div>
+                  <Button onClick={handleReset} variant="outline">Попробовать снова</Button>
+                </div>
+              )}
+
+              {/* Результат */}
+              {result && !loading && (
+                <div style={{
+                  background: COLORS.white, borderRadius: '16px', padding: '28px',
+                  boxShadow: '0 4px 20px rgba(37,99,235,0.12)', border: '2px solid #2563eb20',
+                }}>
+                  {/* Статус */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '20px' }}>
+                    <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: '#dcfce7', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '18px' }}>✅</div>
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: '15px' }}>Транзакция создана</div>
+                      <div style={{ fontSize: '12px', color: COLORS.textSecondary }}>Добавлена в список операций</div>
+                    </div>
+                  </div>
+
+                  {/* Тип + сумма */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+                    {(() => { const b = typeBadge(result.transaction_type); return (
+                      <span style={{ padding: '5px 14px', borderRadius: '20px', fontWeight: 700, fontSize: '13px', background: b.bg, color: b.color }}>{b.label}</span>
+                    ); })()}
+                    <span style={{ fontSize: '28px', fontWeight: 800, color: result.transaction_type === 'income' ? COLORS.green : COLORS.red }}>
+                      {result.transaction_type === 'income' ? '+' : '-'}{formatCurrency(parseFloat(result.amount))}
+                    </span>
+                  </div>
+
+                  {/* Детали */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '20px', padding: '16px', background: COLORS.grayLight, borderRadius: '10px' }}>
+                    {[
+                      { l: 'Описание', v: result.description },
+                      { l: 'Контрагент', v: result.counterparty || '—' },
+                      { l: 'Дата', v: safeDate(result.payment_date) },
+                      { l: 'Категория', v: result.suggested_category_slug || 'other' },
+                    ].map(({ l, v }) => (
+                      <div key={l} style={{ display: 'flex', justifyContent: 'space-between', gap: '12px' }}>
+                        <span style={{ fontSize: '13px', color: COLORS.textSecondary }}>{l}</span>
+                        <span style={{ fontSize: '13px', fontWeight: 500, textAlign: 'right' }}>{v}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Уверенность */}
+                  <div style={{ marginBottom: '20px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+                      <span style={{ fontSize: '13px', color: COLORS.textSecondary }}>Уверенность AI</span>
+                      <span style={{ fontSize: '13px', fontWeight: 700, color: confidenceColor(result.confidence_score) }}>
+                        {Math.round(result.confidence_score * 100)}%
+                      </span>
+                    </div>
+                    <div style={{ height: '8px', borderRadius: '4px', background: COLORS.border, overflow: 'hidden' }}>
+                      <div style={{
+                        height: '100%', borderRadius: '4px',
+                        width: `${Math.round(result.confidence_score * 100)}%`,
+                        background: confidenceColor(result.confidence_score),
+                        transition: 'width 0.6s ease',
+                      }} />
+                    </div>
+                  </div>
+
+                  {/* Fallback badge */}
+                  {result.is_fallback && (
+                    <div style={{ marginBottom: '16px', padding: '8px 12px', background: '#f8fafc', border: `1px solid ${COLORS.border}`, borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontSize: '14px' }}>⚠️</span>
+                      <span style={{ fontSize: '12px', color: COLORS.textSecondary }}>Gemini недоступен — использован regex-парсер. Проверьте данные.</span>
+                    </div>
+                  )}
+
+                  {/* Кнопки */}
+                  <div style={{ display: 'flex', gap: '10px' }}>
+                    <Button variant="outline" onClick={handleReset} style={{ flex: 1 }}>Разобрать ещё</Button>
+                    <Button onClick={() => { window.location.hash = '#transactions'; }} style={{ flex: 1 }}>Посмотреть в операциях</Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // АЛЕРТЫ И ПРАВИЛА
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    const AlertsPage = () => {
+      const { companyId } = useAuth();
+      const [rules, setRules]       = useState([]);
+      const [triggered, setTriggered] = useState([]);
+      const [unread, setUnread]     = useState(0);
+      const [loading, setLoading]   = useState(true);
+      const [checking, setChecking] = useState(false);
+      const [showModal, setShowModal] = useState(false);
+      const [editingRule, setEditingRule] = useState(null);
+      const [toast, setToast]       = useState(null);
+      const [form, setForm]         = useState({ metric_type: 'min_balance', threshold_value: '', email_recipient: '' });
+
+      const BASE = `/companies/${companyId}/alerts`;
+
+      const METRIC_META = {
+        min_balance: { emoji: '🔴', label: 'Минимальный баланс', hint: 'Сработает если суммарный баланс счетов упадёт НИЖЕ этой суммы', color: '#dc2626' },
+        opex_spike:  { emoji: '🟡', label: 'Всплеск расходов',  hint: 'Сработает если расходы за месяц превысят эту сумму',          color: '#f59e0b' },
+      };
+
+      const load = async () => {
+        setLoading(true);
+        const [rRes, tRes] = await Promise.all([
+          apiCall('get', `${BASE}/rules`),
+          apiCall('get', `${BASE}/triggered`),
+        ]);
+        if (rRes.success) setRules(rRes.data.rules || []);
+        if (tRes.success) { setTriggered(tRes.data.alerts || []); setUnread(tRes.data.unread_count || 0); }
+        setLoading(false);
+      };
+
+      useEffect(() => { if (companyId) load(); }, [companyId]);
+
+      const resetForm = () => setForm({ metric_type: 'min_balance', threshold_value: '', email_recipient: '' });
+
+      const openCreate = () => { resetForm(); setEditingRule(null); setShowModal(true); };
+      const openEdit   = (r)  => {
+        setForm({ metric_type: r.metric_type, threshold_value: String(r.threshold_value), email_recipient: r.email_recipient });
+        setEditingRule(r);
+        setShowModal(true);
+      };
+
+      const handleSave = async () => {
+        if (!form.threshold_value || !form.email_recipient) {
+          setToast({ message: 'Заполните все поля', type: 'error' }); return;
+        }
+        const payload = { metric_type: form.metric_type, threshold_value: parseFloat(form.threshold_value), email_recipient: form.email_recipient };
+        const res = editingRule
+          ? await apiCall('patch', `${BASE}/rules/${editingRule.id}`, payload)
+          : await apiCall('post',  `${BASE}/rules`, payload);
+        if (res.success) {
+          setToast({ message: editingRule ? 'Правило обновлено' : 'Правило создано', type: 'success' });
+          setShowModal(false); resetForm(); load();
+        } else setToast({ message: res.error, type: 'error' });
+      };
+
+      const handleDelete = async (id) => {
+        const res = await apiCall('delete', `${BASE}/rules/${id}`);
+        if (res.success) { setToast({ message: 'Правило удалено', type: 'success' }); load(); }
+        else setToast({ message: res.error, type: 'error' });
+      };
+
+      const handleToggle = async (rule) => {
+        const res = await apiCall('patch', `${BASE}/rules/${rule.id}`, { is_active: !rule.is_active });
+        if (res.success) load();
+        else setToast({ message: res.error, type: 'error' });
+      };
+
+      const handleCheckAll = async () => {
+        setChecking(true);
+        const res = await apiCall('post', `${BASE}/check-all`);
+        setChecking(false);
+        if (res.success) {
+          const d = res.data;
+          if (d.triggered > 0)
+            setToast({ message: `🔴 Сработало ${d.triggered} алерт${d.triggered > 1 ? 'а' : ''}! Проверьте ленту.`, type: 'error' });
+          else
+            setToast({ message: `✅ Проверено ${d.checked} метрики, нарушений нет`, type: 'success' });
+          load();
+        } else setToast({ message: res.error, type: 'error' });
+      };
+
+      const handleRead = async (id) => {
+        const res = await apiCall('post', `${BASE}/triggered/${id}/read`);
+        if (res.success) {
+          setTriggered(prev => prev.map(a => a.id === id ? { ...a, is_read: true } : a));
+          setUnread(prev => Math.max(0, prev - 1));
+        }
+      };
+
+      // Toggle Switch компонент
+      const ToggleSwitch = ({ active, onToggle }) => (
+        <div onClick={onToggle} style={{ cursor: 'pointer', width: '44px', height: '24px', borderRadius: '12px',
+          background: active ? COLORS.accent : '#cbd5e1', position: 'relative', transition: 'background 0.2s', flexShrink: 0 }}>
+          <div style={{
+            position: 'absolute', top: '3px', left: active ? '23px' : '3px',
+            width: '18px', height: '18px', borderRadius: '50%', background: '#fff',
+            boxShadow: '0 1px 3px rgba(0,0,0,0.2)', transition: 'left 0.2s',
+          }} />
+        </div>
+      );
+
+      if (loading) return <div style={{ padding: '24px' }}><LoadingSpinner /></div>;
+
+      return (
+        <div style={{ padding: '24px' }}>
+          {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+
+          {/* ── СЕКЦИЯ 1: Правила ── */}
+          <div style={{ marginBottom: '32px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '10px' }}>
+              <div style={{ fontSize: '16px', fontWeight: 700 }}>Правила алертов</div>
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <button onClick={handleCheckAll} disabled={checking} style={{
+                  padding: '9px 18px', borderRadius: '8px', border: `1.5px solid ${COLORS.border}`,
+                  background: '#fff', cursor: checking ? 'not-allowed' : 'pointer', fontWeight: 500,
+                  fontSize: '14px', fontFamily: 'Inter, sans-serif', display: 'flex', alignItems: 'center', gap: '6px',
+                }}>
+                  {checking ? '⏳' : '🔄'} Проверить сейчас
+                </button>
+                <Button onClick={openCreate}>+ Добавить правило</Button>
+              </div>
+            </div>
+
+            {rules.length === 0 ? (
+              <div style={{ background: COLORS.white, borderRadius: '12px', padding: '40px', textAlign: 'center', color: COLORS.textSecondary, boxShadow: '0 1px 4px rgba(0,0,0,0.07)' }}>
+                <div style={{ fontSize: '36px', marginBottom: '12px' }}>🔔</div>
+                <div style={{ fontWeight: 500, marginBottom: '6px' }}>Правил пока нет</div>
+                <div style={{ fontSize: '13px' }}>Добавьте правило чтобы получать уведомления</div>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap' }}>
+                {rules.map(rule => {
+                  const meta = METRIC_META[rule.metric_type] || { emoji: '⚡', label: rule.metric_type, color: '#64748b', hint: '' };
+                  return (
+                    <div key={rule.id} style={{
+                      background: COLORS.white, borderRadius: '12px', padding: '20px',
+                      boxShadow: '0 1px 4px rgba(0,0,0,0.07)', minWidth: '240px', flex: '1',
+                      opacity: rule.is_active ? 1 : 0.6, border: rule.is_active ? `2px solid ${meta.color}20` : `2px solid ${COLORS.border}`,
+                      transition: 'all 0.2s',
+                    }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ fontSize: '20px' }}>{meta.emoji}</span>
+                          <span style={{ fontWeight: 600, fontSize: '14px' }}>{meta.label}</span>
+                        </div>
+                        <ToggleSwitch active={rule.is_active} onToggle={() => handleToggle(rule)} />
+                      </div>
+                      <div style={{ fontSize: '13px', color: COLORS.textSecondary, marginBottom: '4px' }}>
+                        Порог: <b style={{ color: COLORS.text }}>{formatCurrency(rule.threshold_value)}</b>
+                      </div>
+                      <div style={{ fontSize: '13px', color: COLORS.textSecondary, marginBottom: '4px' }}>
+                        Email: <b style={{ color: COLORS.text }}>{rule.email_recipient}</b>
+                      </div>
+                      <div style={{ fontSize: '12px', color: COLORS.textSecondary, marginBottom: '14px' }}>
+                        Срабатываний: <b style={{ color: rule.triggered_count > 0 ? meta.color : COLORS.text }}>{rule.triggered_count}</b>
+                      </div>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <button onClick={() => openEdit(rule)} style={{ flex: 1, padding: '7px', borderRadius: '6px', border: `1px solid ${COLORS.border}`, background: '#fff', cursor: 'pointer', fontSize: '12px', fontFamily: 'Inter, sans-serif' }}>✎ Изменить</button>
+                        <button onClick={() => handleDelete(rule.id)} style={{ flex: 1, padding: '7px', borderRadius: '6px', border: `1px solid ${COLORS.redLight}`, background: COLORS.redLight, cursor: 'pointer', fontSize: '12px', color: COLORS.red, fontFamily: 'Inter, sans-serif' }}>✕ Удалить</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* ── СЕКЦИЯ 2: Лента алертов ── */}
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
+              <div style={{ fontSize: '16px', fontWeight: 700 }}>Сработавшие алерты</div>
+              {unread > 0 && (
+                <span style={{ background: COLORS.red, color: '#fff', borderRadius: '12px', padding: '2px 10px', fontSize: '12px', fontWeight: 700 }}>
+                  {unread} новых
+                </span>
+              )}
+            </div>
+
+            {triggered.length === 0 ? (
+              <div style={{ background: COLORS.white, borderRadius: '12px', padding: '40px', textAlign: 'center', boxShadow: '0 1px 4px rgba(0,0,0,0.07)' }}>
+                <div style={{ fontSize: '36px', marginBottom: '12px' }}>✅</div>
+                <div style={{ fontWeight: 500, marginBottom: '6px' }}>Всё в порядке</div>
+                <div style={{ fontSize: '13px', color: COLORS.textSecondary }}>Нет сработавших алертов</div>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {triggered.map(a => {
+                  const meta = METRIC_META[a.metric_type] || { emoji: '⚡', label: a.metric_type, color: '#64748b' };
+                  const isNew = !a.is_read;
+                  return (
+                    <div key={a.id} style={{
+                      background: isNew ? '#eff6ff' : COLORS.white,
+                      borderRadius: '10px', padding: '14px 18px',
+                      borderLeft: `4px solid ${isNew ? COLORS.accent : COLORS.border}`,
+                      boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
+                      display: 'flex', alignItems: 'center', gap: '14px',
+                      transition: 'all 0.2s',
+                    }}>
+                      <span style={{ fontSize: '20px', flexShrink: 0 }}>{meta.emoji}</span>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '3px' }}>
+                          <span style={{ fontWeight: 600, fontSize: '14px', color: isNew ? COLORS.text : COLORS.textSecondary }}>{meta.label}</span>
+                          <span style={{ fontSize: '12px', color: COLORS.textSecondary }}>{safeDate(a.triggered_at)}</span>
+                        </div>
+                        <div style={{ fontSize: '13px', color: COLORS.textSecondary }}>{a.message}</div>
+                      </div>
+                      {isNew && (
+                        <button onClick={() => handleRead(a.id)} style={{
+                          padding: '5px 12px', borderRadius: '6px', border: `1px solid ${COLORS.border}`,
+                          background: '#fff', cursor: 'pointer', fontSize: '12px', fontFamily: 'Inter, sans-serif',
+                          flexShrink: 0, whiteSpace: 'nowrap',
+                        }}>Прочитать</button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* ── Модальное окно ── */}
+          <Modal isOpen={showModal} onClose={() => { setShowModal(false); resetForm(); setEditingRule(null); }}
+            title={editingRule ? 'Редактировать правило' : 'Новое правило алерта'}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
+              <div>
+                <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>Тип метрики</div>
+                <select value={form.metric_type} onChange={e => setForm({ ...form, metric_type: e.target.value })}
+                  style={{ width: '100%', padding: '10px 12px', border: `1.5px solid ${COLORS.border}`, borderRadius: '8px', fontSize: '14px', fontFamily: 'Inter, sans-serif', background: '#fff' }}>
+                  {Object.entries(METRIC_META).map(([key, m]) => (
+                    <option key={key} value={key}>{m.emoji} {m.label}</option>
+                  ))}
+                </select>
+                <div style={{ fontSize: '12px', color: COLORS.textSecondary, marginTop: '6px' }}>
+                  {METRIC_META[form.metric_type]?.hint}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>Пороговое значение, ₽</div>
+                <Input type="number" placeholder="50000" value={form.threshold_value}
+                  onChange={e => setForm({ ...form, threshold_value: e.target.value })} />
+              </div>
+              <div>
+                <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>Email получателя</div>
+                <Input type="email" placeholder="owner@company.ru" value={form.email_recipient}
+                  onChange={e => setForm({ ...form, email_recipient: e.target.value })} />
+              </div>
+              <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', paddingTop: '4px' }}>
+                <Button variant="outline" onClick={() => { setShowModal(false); resetForm(); setEditingRule(null); }}>Отмена</Button>
+                <Button onClick={handleSave}>{editingRule ? 'Сохранить' : 'Создать'}</Button>
+              </div>
+            </div>
+          </Modal>
+        </div>
+      );
+    };
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // АНАЛИТИКА
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    const AnalyticsPage = () => {
+      const { companyId } = useAuth();
+      const [tab, setTab] = useState('overview');
+      const [loading, setLoading] = useState(true);
+      const [pl, setPl] = useState(null);
+      const [ratios, setRatios] = useState(null);
+      const [forecast, setForecast] = useState(null);
+      const [anomalies, setAnomalies] = useState(null);
+      const [churn, setChurn] = useState(null);
+      const [monthly, setMonthly] = useState(null);
+      const barChartRef = useRef(null);
+      const barChartInstance = useRef(null);
+
+      const today = new Date();
+      const startDate = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-01`;
+      const endDate = today.toISOString().split('T')[0];
+
+      const loadData = async () => {
+        setLoading(true);
+        const [plRes, ratiosRes, forecastRes, anomaliesRes, churnRes, monthlyRes] = await Promise.all([
+          apiCall('get', `/companies/${companyId}/reports/pl?start_date=${startDate}&end_date=${endDate}`),
+          apiCall('get', `/companies/${companyId}/reports/ratios?start_date=${startDate}&end_date=${endDate}`),
+          apiCall('get', `/companies/${companyId}/analytics/forecast?days=30`),
+          apiCall('get', `/companies/${companyId}/analytics/anomalies/expenses`),
+          apiCall('get', `/companies/${companyId}/analytics/churn-risk`),
+          apiCall('get', `/companies/${companyId}/reports/monthly?months=6`),
+        ]);
+        if (plRes.success) setPl(plRes.data);
+        if (ratiosRes.success) setRatios(ratiosRes.data);
+        if (forecastRes.success) setForecast(forecastRes.data);
+        if (anomaliesRes.success) setAnomalies(anomaliesRes.data);
+        if (churnRes.success) setChurn(churnRes.data);
+        if (monthlyRes.success) setMonthly(monthlyRes.data);
+        setLoading(false);
+      };
+
+      useEffect(() => { if (companyId) loadData(); }, [companyId]);
+
+      useEffect(() => {
+        if (tab !== 'comparison' || !monthly || !barChartRef.current) return;
+        if (barChartInstance.current) barChartInstance.current.destroy();
+        const ctx = barChartRef.current.getContext('2d');
+        barChartInstance.current = new Chart(ctx, {
+          type: 'bar',
+          data: {
+            labels: monthly.months.map(m => m.label),
+            datasets: [
+              { label: 'Доходы', data: monthly.months.map(m => m.revenue), backgroundColor: '#3b82f6', borderRadius: 6 },
+              { label: 'Расходы', data: monthly.months.map(m => m.expenses), backgroundColor: '#f87171', borderRadius: 6 },
+              { label: 'Прибыль', data: monthly.months.map(m => m.net_income), backgroundColor: '#4ade80', borderRadius: 6 },
+            ],
+          },
+          options: {
+            responsive: true,
+            plugins: {
+              legend: { position: 'top' },
+              tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${new Intl.NumberFormat('ru-RU',{style:'currency',currency:'RUB',maximumFractionDigits:0}).format(c.raw)}` } }
+            },
+            scales: { y: { beginAtZero: true, ticks: { callback: (v) => new Intl.NumberFormat('ru-RU',{notation:'compact',maximumFractionDigits:1}).format(v)+' ₽' } } },
+          },
+        });
+        return () => { if (barChartInstance.current) barChartInstance.current.destroy(); };
+      }, [tab, monthly]);
+
+      const getHealthColor = (s) => ({ EXCELLENT: '#16a34a', GOOD: '#16a34a', FAIR: '#f59e0b', POOR: '#dc2626', CRITICAL: '#b91c1c' }[s] || COLORS.textSecondary);
+      const getChurnColor  = (r) => ({ low: '#16a34a', medium: '#f59e0b', high: '#dc2626', critical: '#b91c1c' }[r] || COLORS.textSecondary);
+
+      const TabBtn = ({ id, label }) => (
+        <button onClick={() => setTab(id)} style={{ padding: '8px 18px', borderRadius: '8px', border: 'none', background: tab===id ? COLORS.accent : 'transparent', color: tab===id ? '#fff' : COLORS.textSecondary, cursor: 'pointer', fontWeight: 500, fontSize: '14px', transition: 'all 0.2s' }}>{label}</button>
+      );
+
+      const KpiCard = ({ label, value, sub, color }) => (
+        <div style={{ background: COLORS.white, borderRadius: '12px', padding: '20px', flex: 1, minWidth: '160px', boxShadow: '0 1px 4px rgba(0,0,0,0.07)' }}>
+          <div style={{ fontSize: '12px', color: COLORS.textSecondary, marginBottom: '8px' }}>{label}</div>
+          <div style={{ fontSize: '22px', fontWeight: 700, color: color || COLORS.text }}>{value}</div>
+          {sub && <div style={{ fontSize: '12px', color: COLORS.textSecondary, marginTop: '4px' }}>{sub}</div>}
+        </div>
+      );
+
+      if (loading) return <div style={{ padding: '24px' }}><LoadingSpinner /></div>;
+
+      return (
+        <div style={{ padding: '24px' }}>
+          <div style={{ display: 'flex', gap: '4px', background: COLORS.white, padding: '6px', borderRadius: '10px', marginBottom: '24px', width: 'fit-content', boxShadow: '0 1px 4px rgba(0,0,0,0.07)' }}>
+            <TabBtn id="overview"    label="📊 Обзор" />
+            <TabBtn id="comparison"  label="📅 По месяцам" />
+            <TabBtn id="forecast"    label="🔮 Прогноз" />
+            <TabBtn id="anomalies"   label="🔍 Аномалии" />
+          </div>
+
+          {/* ── Обзор ── */}
+          {tab === 'overview' && pl && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+              <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap' }}>
+                <KpiCard label="Выручка"  value={formatCurrency(pl.revenue)}    color={COLORS.green} />
+                <KpiCard label="Расходы"  value={formatCurrency(pl.opex)}       color={COLORS.red} />
+                <KpiCard label="Прибыль"  value={formatCurrency(pl.net_income)} color={pl.net_income >= 0 ? COLORS.green : COLORS.red} />
+                <KpiCard label="EBITDA"   value={formatCurrency(pl.ebitda)} />
+              </div>
+              {ratios && (
+                <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap' }}>
+                  <KpiCard label="EBITDA Margin"       value={`${(ratios.ebitda_margin||0).toFixed(1)}%`} sub="Рентабельность" />
+                  <KpiCard label="ROE"                 value={`${(ratios.roe||0).toFixed(1)}%`}          sub="Рентабельность капитала" />
+                  <KpiCard label="ROI"                 value={`${(ratios.roi||0).toFixed(1)}%`}          sub="Возврат инвестиций" />
+                  <KpiCard label="Финансовое здоровье" value={ratios.health_score || '—'}                color={getHealthColor(ratios.health_score)} sub="Общая оценка" />
+                </div>
+              )}
+              {forecast && (
+                <div style={{ background: COLORS.white, borderRadius: '12px', padding: '20px', boxShadow: '0 1px 4px rgba(0,0,0,0.07)' }}>
+                  <div style={{ fontWeight: 600, marginBottom: '14px' }}>💵 Денежный поток</div>
+                  <div style={{ display: 'flex', gap: '32px', flexWrap: 'wrap' }}>
+                    {[
+                      { l: 'Текущий баланс',     v: formatCurrency(forecast.current_balance),    c: null },
+                      { l: 'Прогноз (30 дн.)',   v: formatCurrency(forecast.forecasted_balance), c: forecast.forecasted_balance >= 0 ? COLORS.green : COLORS.red },
+                      { l: 'Burn rate / мес',    v: formatCurrency(forecast.burn_rate),          c: COLORS.red },
+                      { l: 'Кассовый разрыв',    v: forecast.cash_gap_risk ? '⚠️ Риск' : '✅ Нет', c: forecast.cash_gap_risk ? COLORS.red : COLORS.green },
+                    ].map(({ l, v, c }) => (
+                      <div key={l}>
+                        <div style={{ fontSize: '12px', color: COLORS.textSecondary }}>{l}</div>
+                        <div style={{ fontWeight: 700, fontSize: '18px', color: c || COLORS.text, marginTop: '4px' }}>{v}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── По месяцам ── */}
+          {tab === 'comparison' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+              <div style={{ background: COLORS.white, borderRadius: '12px', padding: '24px', boxShadow: '0 1px 4px rgba(0,0,0,0.07)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                  <div style={{ fontWeight: 600 }}>Доходы / Расходы / Прибыль по месяцам</div>
+                  <button onClick={async () => {
+                    try {
+                      const today = new Date();
+                      const start = `${today.getFullYear()}-01-01`;
+                      const end = today.toISOString().split('T')[0];
+                      await downloadFile(`/api/v1/companies/${companyId}/export/reports/xlsx?start_date=${start}&end_date=${end}`, `planfact_analytics_${end.replace(/-/g,'')}.xlsx`);
+                    } catch(e) { alert('Ошибка: ' + e.message); }
+                  }} style={{ padding: '7px 14px', borderRadius: '8px', border: `1.5px solid ${COLORS.border}`, background: '#fff', cursor: 'pointer', fontSize: '13px', fontFamily: 'Inter, sans-serif', fontWeight: 500 }}>
+                    📊 Excel
+                  </button>
+                </div>
+                <canvas ref={barChartRef} style={{ maxHeight: '320px' }} />
+              </div>
+              {monthly && (
+                <div style={{ background: COLORS.white, borderRadius: '12px', padding: '20px', boxShadow: '0 1px 4px rgba(0,0,0,0.07)', overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14px' }}>
+                    <thead>
+                      <tr style={{ borderBottom: `2px solid ${COLORS.border}` }}>
+                        {['Месяц','Доходы','Расходы','Прибыль','EBITDA'].map(h => (
+                          <th key={h} style={{ textAlign: h==='Месяц'?'left':'right', padding: '10px', color: COLORS.textSecondary, fontWeight: 500 }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {monthly.months.map((m, i) => (
+                        <tr key={i} style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+                          <td style={{ padding: '10px', fontWeight: 500 }}>{m.label}</td>
+                          <td style={{ padding: '10px', textAlign: 'right', color: COLORS.green }}>{formatCurrency(m.revenue)}</td>
+                          <td style={{ padding: '10px', textAlign: 'right', color: COLORS.red }}>{formatCurrency(m.expenses)}</td>
+                          <td style={{ padding: '10px', textAlign: 'right', fontWeight: 600, color: m.net_income >= 0 ? COLORS.green : COLORS.red }}>{formatCurrency(m.net_income)}</td>
+                          <td style={{ padding: '10px', textAlign: 'right' }}>{formatCurrency(m.ebitda)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Прогноз ── */}
+          {tab === 'forecast' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+              {forecast && (
+                <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap' }}>
+                  <KpiCard label="Баланс сейчас"     value={formatCurrency(forecast.current_balance)} />
+                  <KpiCard label="Прогноз (30 дн.)"  value={formatCurrency(forecast.forecasted_balance)} color={forecast.forecasted_balance >= forecast.current_balance ? COLORS.green : COLORS.red} />
+                  <KpiCard label="Burn rate / мес"   value={formatCurrency(forecast.burn_rate)} color={COLORS.red} sub="Расход в месяц" />
+                  <KpiCard label="Кассовый разрыв"   value={forecast.cash_gap_risk ? '⚠️ Риск' : '✅ Нет риска'} color={forecast.cash_gap_risk ? COLORS.red : COLORS.green}
+                    sub={forecast.cash_gap_risk && forecast.critical_date ? `Крит. дата: ${safeDate(forecast.critical_date)}` : null} />
+                </div>
+              )}
+              {churn && (
+                <div style={{ background: COLORS.white, borderRadius: '12px', padding: '20px', boxShadow: '0 1px 4px rgba(0,0,0,0.07)' }}>
+                  <div style={{ fontWeight: 600, marginBottom: '14px' }}>📉 Риск оттока выручки</div>
+                  <div style={{ display: 'flex', gap: '32px', flexWrap: 'wrap', alignItems: 'center' }}>
+                    <div>
+                      <div style={{ fontSize: '12px', color: COLORS.textSecondary, marginBottom: '6px' }}>Уровень риска</div>
+                      <div style={{ display: 'inline-block', padding: '6px 18px', borderRadius: '20px', fontWeight: 700, fontSize: '16px',
+                        background: getChurnColor(churn.churn_risk) + '20', color: getChurnColor(churn.churn_risk) }}>
+                        {churn.churn_risk?.toUpperCase()}
+                      </div>
+                    </div>
+                    {[
+                      { l: 'Рост м/м (2 мес.)', v: churn.growth_rate_m2 },
+                      { l: 'Рост м/м (3 мес.)', v: churn.growth_rate_m3 },
+                    ].map(({ l, v }) => (
+                      <div key={l}>
+                        <div style={{ fontSize: '12px', color: COLORS.textSecondary }}>{l}</div>
+                        <div style={{ fontWeight: 600, fontSize: '18px', color: v >= 0 ? COLORS.green : COLORS.red }}>
+                          {v >= 0 ? '+' : ''}{(v * 100).toFixed(1)}%
+                        </div>
+                      </div>
+                    ))}
+                    <div>
+                      <div style={{ fontSize: '12px', color: COLORS.textSecondary }}>Рекомендация</div>
+                      <div style={{ fontWeight: 500, marginTop: '4px' }}>{churn.recommendation}</div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Аномалии ── */}
+          {tab === 'anomalies' && anomalies && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+              <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap' }}>
+                <KpiCard label="Средний расход"    value={formatCurrency(anomalies.mean_expense)} />
+                <KpiCard label="Ст. отклонение"    value={formatCurrency(anomalies.std_dev)} sub="±1σ от среднего" />
+                <KpiCard label="Аномалий найдено"  value={anomalies.anomaly_count}
+                  color={anomalies.anomaly_count > 0 ? COLORS.red : COLORS.green}
+                  sub="операций >2σ от нормы" />
+              </div>
+              <div style={{ background: COLORS.white, borderRadius: '12px', padding: '20px', boxShadow: '0 1px 4px rgba(0,0,0,0.07)' }}>
+                <div style={{ fontWeight: 600, marginBottom: '14px' }}>🔍 Аномальные расходы</div>
+                {anomalies.anomalies && anomalies.anomalies.length > 0 ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    {anomalies.anomalies.map((a, i) => {
+                      const sev = a.z_score >= 3
+                        ? { color: COLORS.red,    label: '🔴 Критично' }
+                        : { color: '#f59e0b', label: '🟡 Подозрительно' };
+                      return (
+                        <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                          padding: '14px', borderRadius: '8px', background: sev.color + '10', border: `1px solid ${sev.color}30` }}>
+                          <div>
+                            <div style={{ fontWeight: 600 }}>{sev.label}</div>
+                            <div style={{ fontSize: '12px', color: COLORS.textSecondary, marginTop: '2px' }}>
+                              {a.description || 'Расход'}{a.date ? ' · ' + safeDate(a.date) : ''}
+                            </div>
+                          </div>
+                          <div style={{ textAlign: 'right' }}>
+                            <div style={{ fontWeight: 700, fontSize: '16px', color: sev.color }}>{formatCurrency(a.amount)}</div>
+                            <div style={{ fontSize: '12px', color: COLORS.textSecondary }}>z-score: {a.z_score?.toFixed(2)}</div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div style={{ textAlign: 'center', padding: '40px 0', color: COLORS.textSecondary }}>
+                    <div style={{ fontSize: '40px', marginBottom: '12px' }}>✅</div>
+                    <div style={{ fontWeight: 500 }}>Аномалий не обнаружено</div>
+                    <div style={{ fontSize: '12px', marginTop: '4px' }}>Все расходы в пределах нормы</div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // CRM — Воронка продаж (Kanban)
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    const CRMPage = () => {
+      const { companyId } = useAuth();
+      const [deals, setDeals] = useState([]);
+      const [loading, setLoading] = useState(true);
+      const [showModal, setShowModal] = useState(false);
+      const [editingDeal, setEditingDeal] = useState(null);
+      const [toast, setToast] = useState(null);
+      const [formData, setFormData] = useState({
+        title: '', counterparty_name: '', amount: '', probability: 50,
+        expected_close_date: '', assigned_to: '', description: '', status: 'lead',
+      });
+
+      const COLUMNS = [
+        { key: 'lead',        label: 'Лид',            color: '#3b82f6', emoji: '🎯' },
+        { key: 'contact',     label: 'Контакт',        color: '#8b5cf6', emoji: '📞' },
+        { key: 'proposal',    label: 'КП отправлено',  color: '#f59e0b', emoji: '📋' },
+        { key: 'negotiation', label: 'Переговоры',     color: '#ec4899', emoji: '🤝' },
+        { key: 'won',         label: 'Выиграно',       color: '#16a34a', emoji: '🏆' },
+        { key: 'lost',        label: 'Проиграно',      color: '#6b7280', emoji: '❌' },
+      ];
+      const STATUS_ORDER = ['lead', 'contact', 'proposal', 'negotiation', 'won', 'lost'];
+
+      const fetchDeals = async () => {
+        setLoading(true);
+        const res = await apiCall('get', `/companies/${companyId}/crm/deals`);
+        if (res.success) setDeals(res.data.deals || []);
+        setLoading(false);
+      };
+
+      useEffect(() => { if (companyId) fetchDeals(); }, [companyId]);
+
+      const resetForm = () => {
+        setFormData({ title: '', counterparty_name: '', amount: '', probability: 50,
+          expected_close_date: '', assigned_to: '', description: '', status: 'lead' });
+        setEditingDeal(null);
+      };
+
+      const handleSave = async () => {
+        if (!formData.title.trim()) {
+          setToast({ message: 'Введите название сделки', type: 'error' });
+          return;
+        }
+        const payload = {
+          ...formData,
+          amount: formData.amount !== '' && formData.amount != null ? parseFloat(formData.amount) : null,
+          probability: formData.probability !== '' && formData.probability != null ? parseInt(formData.probability) : null,
+          expected_close_date: formData.expected_close_date || null,
+          counterparty_name: formData.counterparty_name || null,
+          assigned_to: formData.assigned_to || null,
+          description: formData.description || null,
+        };
+        const path = editingDeal
+          ? `/companies/${companyId}/crm/deals/${editingDeal.id}`
+          : `/companies/${companyId}/crm/deals`;
+        const method = editingDeal ? 'patch' : 'post';
+        const res = await apiCall(method, path, payload);
+        if (res.success) {
+          setToast({ message: editingDeal ? 'Сделка обновлена' : 'Сделка создана', type: 'success' });
+          setShowModal(false);
+          resetForm();
+          fetchDeals();
+        } else {
+          setToast({ message: res.error, type: 'error' });
+        }
+      };
+
+      const handleDelete = async (dealId) => {
+        const res = await apiCall('delete', `/companies/${companyId}/crm/deals/${dealId}`);
+        if (res.success) {
+          setToast({ message: 'Сделка удалена', type: 'success' });
+          fetchDeals();
+        }
+      };
+
+      const handleMove = async (deal, direction) => {
+        const idx = STATUS_ORDER.indexOf(deal.status);
+        const newIdx = idx + direction;
+        if (newIdx < 0 || newIdx >= STATUS_ORDER.length) return;
+        const res = await apiCall('patch', `/companies/${companyId}/crm/deals/${deal.id}/move`, {
+          status: STATUS_ORDER[newIdx], sort_order: deal.sort_order,
+        });
+        if (res.success) fetchDeals();
+        else setToast({ message: res.error, type: 'error' });
+      };
+
+      const openEdit = (deal) => {
+        setEditingDeal(deal);
+        setFormData({
+          title: deal.title || '', counterparty_name: deal.counterparty_name || '',
+          amount: deal.amount ?? '', probability: deal.probability ?? 50,
+          expected_close_date: deal.expected_close_date || '',
+          assigned_to: deal.assigned_to || '', description: deal.description || '',
+          status: deal.status || 'lead',
+        });
+        setShowModal(true);
+      };
+
+      const totalDeals = deals.length;
+      const totalAmount = deals.reduce((s, d) => s + (parseFloat(d.amount) || 0), 0);
+      const weightedAmount = deals.reduce((s, d) => s + (parseFloat(d.amount) || 0) * ((d.probability || 0) / 100), 0);
+      const dealsByStatus = {};
+      COLUMNS.forEach(col => { dealsByStatus[col.key] = deals.filter(d => d.status === col.key); });
+
+      return (
+        <div style={{ padding: '24px' }}>
+          {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
+            <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
+              <span style={{ color: COLORS.textSecondary, fontSize: '14px' }}>
+                Всего: <b style={{ color: COLORS.text }}>{totalDeals}</b> сделок
+              </span>
+              <span style={{ color: COLORS.textSecondary, fontSize: '14px' }}>
+                Сумма воронки: <b style={{ color: COLORS.text }}>{formatCurrency(totalAmount)}</b>
+              </span>
+              <span style={{ color: COLORS.textSecondary, fontSize: '14px' }}>
+                Ожидаемо (взвешенно): <b style={{ color: COLORS.green }}>{formatCurrency(weightedAmount)}</b>
+              </span>
+            </div>
+            <Button onClick={() => { resetForm(); setShowModal(true); }}>+ Новая сделка</Button>
+          </div>
+
+          {loading ? <LoadingSpinner /> : (
+            <div style={{ display: 'flex', gap: '14px', overflowX: 'auto', paddingBottom: '16px', alignItems: 'flex-start' }}>
+              {COLUMNS.map(col => {
+                const colDeals = dealsByStatus[col.key] || [];
+                const colAmount = colDeals.reduce((s, d) => s + (parseFloat(d.amount) || 0), 0);
+                return (
+                  <div key={col.key} style={{ minWidth: '210px', maxWidth: '210px', flex: '0 0 210px' }}>
+                    <div style={{ background: col.color, borderRadius: '10px 10px 0 0', padding: '12px 14px', color: '#fff' }}>
+                      <div style={{ fontWeight: 600, fontSize: '13px' }}>{col.emoji} {col.label}</div>
+                      <div style={{ fontSize: '11px', opacity: 0.85, marginTop: '2px' }}>
+                        {colDeals.length} шт · {formatCurrency(colAmount)}
+                      </div>
+                    </div>
+                    <div style={{ background: '#f1f5f9', borderRadius: '0 0 10px 10px', padding: '10px', minHeight: '200px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                      {colDeals.map(deal => {
+                        const statusIdx = STATUS_ORDER.indexOf(deal.status);
+                        return (
+                          <div key={deal.id} style={{ background: COLORS.white, borderRadius: '8px', padding: '12px', boxShadow: '0 1px 4px rgba(0,0,0,0.08)' }}>
+                            <div style={{ fontWeight: 600, fontSize: '13px', marginBottom: '5px', lineHeight: 1.3 }}>🏢 {deal.title}</div>
+                            {deal.counterparty_name && (
+                              <div style={{ color: COLORS.textSecondary, fontSize: '12px', marginBottom: '4px' }}>{deal.counterparty_name}</div>
+                            )}
+                            <div style={{ fontSize: '12px', marginBottom: '4px' }}>
+                              <b>{deal.amount != null ? formatCurrency(deal.amount) : '—'}</b>
+                              {deal.probability != null && <span style={{ color: COLORS.textSecondary }}> · {deal.probability}%</span>}
+                            </div>
+                            {deal.expected_close_date && (
+                              <div style={{ fontSize: '11px', color: COLORS.textSecondary, marginBottom: '8px' }}>📅 {safeDate(deal.expected_close_date)}</div>
+                            )}
+                            {deal.assigned_to && (
+                              <div style={{ fontSize: '11px', color: COLORS.textSecondary, marginBottom: '8px' }}>👤 {deal.assigned_to}</div>
+                            )}
+                            <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', marginTop: '6px' }}>
+                              {statusIdx > 0 && (
+                                <button onClick={() => handleMove(deal, -1)} title="Назад" style={{ padding: '3px 8px', borderRadius: '5px', border: `1px solid ${COLORS.border}`, background: '#fff', cursor: 'pointer', fontSize: '12px' }}>←</button>
+                              )}
+                              {statusIdx < STATUS_ORDER.length - 1 && (
+                                <button onClick={() => handleMove(deal, 1)} title="Вперёд" style={{ padding: '3px 8px', borderRadius: '5px', border: `1px solid ${COLORS.border}`, background: '#fff', cursor: 'pointer', fontSize: '12px' }}>→</button>
+                              )}
+                              <button onClick={() => openEdit(deal)} title="Редактировать" style={{ padding: '3px 8px', borderRadius: '5px', border: `1px solid ${COLORS.border}`, background: '#fff', cursor: 'pointer', fontSize: '12px' }}>✎</button>
+                              <button onClick={() => handleDelete(deal.id)} title="Удалить" style={{ padding: '3px 8px', borderRadius: '5px', border: `1px solid ${COLORS.redLight}`, background: COLORS.redLight, cursor: 'pointer', fontSize: '12px', color: COLORS.red }}>✕</button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                      {colDeals.length === 0 && (
+                        <div style={{ textAlign: 'center', color: COLORS.textSecondary, fontSize: '12px', padding: '24px 0', opacity: 0.6 }}>Нет сделок</div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <Modal isOpen={showModal} onClose={() => { setShowModal(false); resetForm(); }} title={editingDeal ? 'Редактировать сделку' : 'Новая сделка'}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              <div>
+                <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>Название *</div>
+                <Input placeholder="Название сделки" value={formData.title} onChange={(e) => setFormData({ ...formData, title: e.target.value })} />
+              </div>
+              <div>
+                <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>Клиент / Контрагент</div>
+                <Input placeholder="ООО Компания" value={formData.counterparty_name} onChange={(e) => setFormData({ ...formData, counterparty_name: e.target.value })} />
+              </div>
+              <div style={{ display: 'flex', gap: '12px' }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>Сумма, ₽</div>
+                  <Input type="number" placeholder="500000" value={formData.amount} onChange={(e) => setFormData({ ...formData, amount: e.target.value })} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>Вероятность: {formData.probability}%</div>
+                  <input type="range" min="0" max="100" value={formData.probability}
+                    onChange={(e) => setFormData({ ...formData, probability: parseInt(e.target.value) })}
+                    style={{ width: '100%', marginTop: '10px', accentColor: COLORS.accent }} />
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '12px' }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>Ожидаемая дата</div>
+                  <Input type="date" value={formData.expected_close_date} onChange={(e) => setFormData({ ...formData, expected_close_date: e.target.value })} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>Ответственный</div>
+                  <Input placeholder="Иван Иванов" value={formData.assigned_to} onChange={(e) => setFormData({ ...formData, assigned_to: e.target.value })} />
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>Статус</div>
+                <select value={formData.status} onChange={(e) => setFormData({ ...formData, status: e.target.value })}
+                  style={{ width: '100%', padding: '10px 14px', border: `1.5px solid ${COLORS.border}`, borderRadius: '8px', fontSize: '14px', fontFamily: 'Inter, sans-serif', background: '#fff' }}>
+                  <option value="lead">🎯 Лид</option>
+                  <option value="contact">📞 Контакт установлен</option>
+                  <option value="proposal">📋 КП отправлено</option>
+                  <option value="negotiation">🤝 Переговоры</option>
+                  <option value="won">🏆 Выиграно</option>
+                  <option value="lost">❌ Проиграно</option>
+                </select>
+              </div>
+              <div>
+                <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>Описание</div>
+                <textarea placeholder="Детали сделки..." value={formData.description}
+                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                  style={{ width: '100%', padding: '10px 14px', border: `1.5px solid ${COLORS.border}`, borderRadius: '8px', fontSize: '14px', fontFamily: 'Inter, sans-serif', minHeight: '80px', resize: 'vertical', boxSizing: 'border-box' }} />
+              </div>
+              <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', paddingTop: '4px' }}>
+                <Button variant="outline" onClick={() => { setShowModal(false); resetForm(); }}>Отмена</Button>
+                <Button onClick={handleSave}>{editingDeal ? 'Сохранить' : 'Создать'}</Button>
+              </div>
+            </div>
+          </Modal>
+        </div>
+      );
+    };
+
     const Sidebar = ({ currentPage, onNavigate }) => {
       const { user, logout } = useAuth();
 
@@ -3667,8 +4935,12 @@
         { label: '💳 Операции', hash: '#transactions' },
         { label: '📅 Календарь', hash: '#calendar' },
         { label: '📈 Отчёты', hash: '#reports' },
+        { label: '🔬 Аналитика', hash: '#analytics' },
+        { label: '🤖 AI Парсер', hash: '#ai-parser' },
+        { label: '🔔 Алерты', hash: '#alerts' },
         { label: '👥 Контрагенты', hash: '#counterparties' },
         { label: '📁 Проекты', hash: '#projects' },
+        { label: '🎯 CRM', hash: '#crm' },
         { label: '💰 Бюджеты', hash: '#budgets' },
         { label: '📋 Заявки на оплату', hash: '#payment-requests' },
         { label: '👷 Сотрудники и ФОТ', hash: '#payroll' },
@@ -3801,8 +5073,12 @@
         transactions: '💳 Операции',
         calendar: '📅 Платёжный календарь',
         reports: '📈 Отчёты',
+        analytics: '🔬 Аналитика',
+        'ai-parser': '🤖 AI Парсер транзакций',
+        alerts: '🔔 Алерты и правила',
         counterparties: '👥 Контрагенты',
         projects: '📁 Проекты',
+        crm: '🎯 CRM — Воронка продаж',
         budgets: '💰 Бюджеты',
         'payment-requests': '📋 Заявки на оплату',
         payroll: '👷 Сотрудники и ФОТ',
@@ -3855,8 +5131,12 @@
         transactions: <Transactions />,
         calendar: <Calendar />,
         reports: <Reports />,
+        analytics: <AnalyticsPage />,
+        'ai-parser': <AIParserPage />,
+        alerts: <AlertsPage />,
         counterparties: <Counterparties />,
         projects: <Projects />,
+        crm: <CRMPage />,
         budgets: <Budgets />,
         'payment-requests': <PaymentRequests />,
         payroll: <Payroll />,
