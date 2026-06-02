@@ -5326,23 +5326,160 @@
       );
     };
 
-    const Header = ({ title }) => {
+    const Header = ({ title, onNavigate }) => {
+      const { companyId } = useAuth();
+      const [showQuick, setShowQuick] = useState(false);
+      const [accounts, setAccounts]   = useState([]);
+      const [saving, setSaving]       = useState(false);
+      const [toast, setToast]         = useState(null);
+      const [form, setForm] = useState({
+        description: '', amount: '', type: 'expense',
+        date: new Date().toISOString().split('T')[0], account_id: '',
+      });
+
+      const openQuick = async () => {
+        if (accounts.length === 0) {
+          const res = await apiCall('get', `/companies/${companyId}/accounts`);
+          if (res.success) {
+            const list = res.data.accounts || [];
+            setAccounts(list);
+            if (list.length > 0) setForm(f => ({ ...f, account_id: list[0].id }));
+          }
+        }
+        setForm(f => ({ ...f, date: new Date().toISOString().split('T')[0] }));
+        setShowQuick(true);
+      };
+
+      const handleSave = async () => {
+        if (!form.description.trim() || !form.amount || !form.account_id) {
+          setToast({ type: 'error', message: 'Заполните все поля' }); return;
+        }
+        setSaving(true);
+        const res = await apiCall('post', `/companies/${companyId}/transactions`, {
+          account_id: form.account_id,
+          description: form.description.trim(),
+          amount: parseFloat(form.amount),
+          transaction_type: form.type === 'income' ? 'INCOME' : 'EXPENSE',
+          payment_date: form.date,
+        });
+        setSaving(false);
+        if (res.success) {
+          setToast({ type: 'success', message: '✅ Операция добавлена' });
+          setShowQuick(false);
+          setForm({ description: '', amount: '', type: 'expense', date: new Date().toISOString().split('T')[0], account_id: accounts[0]?.id || '' });
+        } else {
+          setToast({ type: 'error', message: res.error });
+        }
+      };
+
+      // Закрытие по Escape
+      useEffect(() => {
+        const onKey = (e) => { if (e.key === 'Escape') setShowQuick(false); };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+      }, []);
+
       return (
-        <div
-          style={{
-            height: '64px',
-            background: COLORS.white,
+        <>
+          {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+          <div style={{
+            height: '64px', background: COLORS.white,
             borderBottom: `1px solid ${COLORS.border}`,
-            display: 'flex',
-            alignItems: 'center',
-            paddingLeft: '32px',
-            paddingRight: '32px',
-          }}
-        >
-          <h1 style={{ fontSize: '20px', fontWeight: 600, color: COLORS.text }}>
-            {title}
-          </h1>
-        </div>
+            display: 'flex', alignItems: 'center',
+            paddingLeft: '32px', paddingRight: '24px',
+            justifyContent: 'space-between',
+          }}>
+            <h1 style={{ fontSize: '18px', fontWeight: 600, color: COLORS.text }}>{title}</h1>
+
+            {/* Кнопка быстрого ввода */}
+            <button onClick={openQuick} style={{
+              display: 'flex', alignItems: 'center', gap: '8px',
+              padding: '9px 18px', borderRadius: '8px', border: 'none',
+              background: COLORS.accent, color: '#fff', cursor: 'pointer',
+              fontWeight: 600, fontSize: '14px', fontFamily: 'Inter, sans-serif',
+              boxShadow: '0 2px 8px rgba(37,99,235,0.3)', transition: 'all 0.2s',
+            }}
+              onMouseEnter={e => e.currentTarget.style.background = '#1d4ed8'}
+              onMouseLeave={e => e.currentTarget.style.background = COLORS.accent}
+            >
+              <span style={{ fontSize: '18px', lineHeight: 1 }}>＋</span> Операция
+            </button>
+          </div>
+
+          {/* Дропдаун быстрого ввода */}
+          {showQuick && (
+            <>
+              {/* Overlay */}
+              <div onClick={() => setShowQuick(false)} style={{ position: 'fixed', inset: 0, zIndex: 9990 }} />
+              {/* Панель */}
+              <div style={{
+                position: 'fixed', top: '72px', right: '24px', zIndex: 9991,
+                width: '340px', background: COLORS.white, borderRadius: '14px',
+                boxShadow: '0 8px 32px rgba(0,0,0,0.18)', padding: '22px',
+                border: `1px solid ${COLORS.border}`, animation: 'slideIn 0.15s ease-out',
+              }}>
+                <div style={{ fontWeight: 700, fontSize: '15px', marginBottom: '16px' }}>⚡ Быстрая операция</div>
+
+                {/* Тип — toggle */}
+                <div style={{ display: 'flex', borderRadius: '8px', overflow: 'hidden', border: `1.5px solid ${COLORS.border}`, marginBottom: '14px' }}>
+                  {[['expense','📉 Расход'], ['income','📈 Доход']].map(([val, label]) => (
+                    <button key={val} onClick={() => setForm(f => ({ ...f, type: val }))} style={{
+                      flex: 1, padding: '9px', border: 'none', cursor: 'pointer', fontWeight: 600,
+                      fontSize: '13px', fontFamily: 'Inter, sans-serif', transition: 'all 0.15s',
+                      background: form.type === val ? (val === 'income' ? '#dcfce7' : '#fee2e2') : '#fff',
+                      color: form.type === val ? (val === 'income' ? COLORS.green : COLORS.red) : COLORS.textSecondary,
+                    }}>{label}</button>
+                  ))}
+                </div>
+
+                {/* Сумма — крупная */}
+                <div style={{ position: 'relative', marginBottom: '12px' }}>
+                  <span style={{ position: 'absolute', left: '14px', top: '50%', transform: 'translateY(-50%)', fontSize: '18px', color: COLORS.textSecondary, fontWeight: 600 }}>₽</span>
+                  <input
+                    type="number" placeholder="0" value={form.amount}
+                    onChange={e => setForm(f => ({ ...f, amount: e.target.value }))}
+                    autoFocus
+                    style={{ width: '100%', padding: '12px 14px 12px 36px', border: `1.5px solid ${COLORS.border}`, borderRadius: '8px', fontSize: '20px', fontWeight: 700, fontFamily: 'Inter, sans-serif', boxSizing: 'border-box', outline: 'none' }}
+                    onFocus={e => e.target.style.borderColor = COLORS.accent}
+                    onBlur={e => e.target.style.borderColor = COLORS.border}
+                    onKeyDown={e => e.key === 'Enter' && handleSave()}
+                  />
+                </div>
+
+                {/* Описание */}
+                <input
+                  type="text" placeholder="Описание операции"
+                  value={form.description}
+                  onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+                  style={{ width: '100%', padding: '10px 14px', border: `1.5px solid ${COLORS.border}`, borderRadius: '8px', fontSize: '14px', fontFamily: 'Inter, sans-serif', marginBottom: '10px', boxSizing: 'border-box', outline: 'none' }}
+                  onFocus={e => e.target.style.borderColor = COLORS.accent}
+                  onBlur={e => e.target.style.borderColor = COLORS.border}
+                  onKeyDown={e => e.key === 'Enter' && handleSave()}
+                />
+
+                {/* Счёт + Дата */}
+                <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
+                  <select value={form.account_id} onChange={e => setForm(f => ({ ...f, account_id: e.target.value }))}
+                    style={{ flex: 1, padding: '9px 10px', border: `1.5px solid ${COLORS.border}`, borderRadius: '8px', fontSize: '13px', fontFamily: 'Inter, sans-serif', background: '#fff' }}>
+                    {accounts.map(a => <option key={a.id} value={a.id}>💳 {a.name}</option>)}
+                  </select>
+                  <input type="date" value={form.date} onChange={e => setForm(f => ({ ...f, date: e.target.value }))}
+                    style={{ width: '130px', padding: '9px 10px', border: `1.5px solid ${COLORS.border}`, borderRadius: '8px', fontSize: '13px', fontFamily: 'Inter, sans-serif' }} />
+                </div>
+
+                {/* Кнопки */}
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button onClick={() => setShowQuick(false)} style={{ flex: 1, padding: '10px', borderRadius: '8px', border: `1.5px solid ${COLORS.border}`, background: '#fff', cursor: 'pointer', fontWeight: 500, fontSize: '14px', fontFamily: 'Inter, sans-serif' }}>Отмена</button>
+                  <button onClick={handleSave} disabled={saving} style={{ flex: 2, padding: '10px', borderRadius: '8px', border: 'none', background: saving ? '#94a3b8' : COLORS.accent, color: '#fff', cursor: saving ? 'not-allowed' : 'pointer', fontWeight: 600, fontSize: '14px', fontFamily: 'Inter, sans-serif' }}>
+                    {saving ? '⏳ Сохраняю...' : '✓ Сохранить'}
+                  </button>
+                </div>
+
+                <div style={{ marginTop: '10px', fontSize: '11px', color: COLORS.textSecondary, textAlign: 'center' }}>Enter — сохранить · Esc — закрыть</div>
+              </div>
+            </>
+          )}
+        </>
       );
     };
 
