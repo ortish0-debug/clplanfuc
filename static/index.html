@@ -2863,165 +2863,183 @@
         </div>
       );
 
-      // Определения виджетов
-      const WIDGET_RENDER = {
-        kpi: (
-          <div key="kpi" style={{ display: 'flex', gap: '14px', flexWrap: 'wrap' }}>
-            <KpiCard icon="📈" title="Выручка (месяц)"  value={curPl?.revenue || 0}    change={revChg}  valueColor={COLORS.green} />
-            <KpiCard icon="📉" title="Расходы (месяц)"  value={curPl?.opex || 0}       change={expChg}  valueColor={COLORS.red} />
-            <KpiCard icon="💎" title="Прибыль (месяц)"  value={curPl?.net_income || 0} change={profChg} valueColor={curPl?.net_income >= 0 ? COLORS.green : COLORS.red} />
-            <KpiCard icon="🏦" title="Общий баланс"     value={totalBalance}           valueColor={totalBalance >= 0 ? COLORS.text : COLORS.red} />
+      // Рендер виджета по id — функция вместо объекта с JSX
+      const renderWidget = (id) => {
+        const W = ({ children, title, link, linkLabel }) => (
+          <div style={{ background: COLORS.white, borderRadius: '14px', padding: '22px', border: '1px solid ' + COLORS.border }}>
+            {title && (
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px' }}>
+                <div style={{ fontWeight:600, fontSize:'15px' }}>{title}</div>
+                {link && <a href={link} style={{ color: COLORS.accent, textDecoration:'none', fontSize:'13px' }}>{linkLabel || 'Все →'}</a>}
+              </div>
+            )}
+            {children}
           </div>
-        ),
-        chart: (
-          <div key="chart" style={{ background: COLORS.white, borderRadius: '14px', padding: '22px', border: `1px solid ${COLORS.border}` }}>
-            <div style={{ fontWeight: 600, marginBottom: '16px', fontSize: '15px' }}>📈 Доходы / Расходы / Прибыль по месяцам</div>
-            <canvas ref={chartRef} style={{ maxHeight: '240px' }} />
+        );
+        if (id === 'kpi') return (
+          <div key="kpi" style={{ display:'flex', gap:'14px', flexWrap:'wrap' }}>
+            <KpiCard icon="📈" title="Выручка (месяц)"  value={curPl ? curPl.revenue : 0}    change={revChg}  valueColor={COLORS.green} />
+            <KpiCard icon="📉" title="Расходы (месяц)"  value={curPl ? curPl.opex : 0}       change={expChg}  valueColor={COLORS.red} />
+            <KpiCard icon="💎" title="Прибыль (месяц)"  value={curPl ? curPl.net_income : 0} change={profChg} valueColor={curPl && curPl.net_income >= 0 ? COLORS.green : COLORS.red} />
+            <KpiCard icon="🏦" title="Общий баланс"     value={totalBalance}                  valueColor={totalBalance >= 0 ? COLORS.text : COLORS.red} />
           </div>
-        ),
-        accounts: (
-          <div key="accounts" style={{ background: COLORS.white, borderRadius: '14px', padding: '22px', border: `1px solid ${COLORS.border}` }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
-              <div style={{ fontWeight: 600, fontSize: '15px' }}>🏦 Счета</div>
-              <a href="#settings" style={{ color: COLORS.accent, textDecoration: 'none', fontSize: '13px' }}>Управление →</a>
-            </div>
-            {accounts.length === 0 ? <div style={{ color: COLORS.textSecondary, textAlign: 'center', padding: '20px 0', fontSize: '13px' }}>Счетов нет</div> : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                {accounts.map(acc => {
-                  const bal = parseFloat(acc.current_balance || 0);
-                  const typeIcon = { CHECKING:'🏛', CASH:'💵', SAVINGS:'🐷', CREDIT:'💳', INVESTMENT:'📈' }[acc.account_type?.toUpperCase()] || '🏦';
-                  return (
-                    <div key={acc.id} style={{ display:'flex', alignItems:'center', gap:'12px', padding:'10px 12px', borderRadius:'8px', background: COLORS.grayLight }}>
-                      <span style={{ fontSize:'20px' }}>{typeIcon}</span>
-                      <div style={{ flex:1 }}><div style={{ fontSize:'13px', fontWeight:500 }}>{acc.name}</div><div style={{ fontSize:'11px', color: COLORS.textSecondary }}>{acc.currency}</div></div>
-                      <div style={{ fontWeight:700, color: bal>=0?COLORS.text:COLORS.red, fontSize:'14px' }}>{formatCurrency(bal)}</div>
-                    </div>
-                  );
-                })}
-                <div style={{ borderTop:`1px solid ${COLORS.border}`, paddingTop:'10px', display:'flex', justifyContent:'space-between', fontSize:'14px', fontWeight:700 }}>
-                  <span>Итого</span><span style={{ color: totalBalance>=0?COLORS.green:COLORS.red }}>{formatCurrency(totalBalance)}</span>
+        );
+        if (id === 'chart') return (
+          <div key="chart" style={{ background: COLORS.white, borderRadius:'14px', padding:'22px', border:'1px solid ' + COLORS.border }}>
+            <div style={{ fontWeight:600, marginBottom:'16px', fontSize:'15px' }}>📈 Доходы / Расходы по месяцам</div>
+            <canvas ref={chartRef} style={{ maxHeight:'240px' }} />
+          </div>
+        );
+        if (id === 'accounts') return (
+          <W key="accounts" title="🏦 Счета" link="#settings" linkLabel="Управление →">
+            {accounts.length === 0
+              ? <div style={{ color:COLORS.textSecondary, textAlign:'center', padding:'20px 0', fontSize:'13px' }}>Счетов нет</div>
+              : <div style={{ display:'flex', flexDirection:'column', gap:'10px' }}>
+                  {accounts.map(acc => {
+                    const bal = parseFloat(acc.current_balance || 0);
+                    const icons = { CHECKING:'🏛', CASH:'💵', SAVINGS:'🐷', CREDIT:'💳', INVESTMENT:'📈' };
+                    const ico = icons[(acc.account_type||'').toUpperCase()] || '🏦';
+                    return (
+                      <div key={acc.id} style={{ display:'flex', alignItems:'center', gap:'12px', padding:'10px 12px', borderRadius:'8px', background:COLORS.grayLight }}>
+                        <span style={{ fontSize:'20px' }}>{ico}</span>
+                        <div style={{ flex:1 }}>
+                          <div style={{ fontSize:'13px', fontWeight:500 }}>{acc.name}</div>
+                          <div style={{ fontSize:'11px', color:COLORS.textSecondary }}>{acc.currency}</div>
+                        </div>
+                        <div style={{ fontWeight:700, color:bal>=0?COLORS.text:COLORS.red, fontSize:'14px' }}>{formatCurrency(bal)}</div>
+                      </div>
+                    );
+                  })}
+                  <div style={{ borderTop:'1px solid '+COLORS.border, paddingTop:'10px', display:'flex', justifyContent:'space-between', fontSize:'14px', fontWeight:700 }}>
+                    <span>Итого</span>
+                    <span style={{ color:totalBalance>=0?COLORS.green:COLORS.red }}>{formatCurrency(totalBalance)}</span>
+                  </div>
                 </div>
-              </div>
-            )}
-          </div>
-        ),
-        transactions: (
-          <div key="transactions" style={{ background: COLORS.white, borderRadius: '14px', padding: '22px', border: `1px solid ${COLORS.border}` }}>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px' }}>
-              <div style={{ fontWeight:600, fontSize:'15px' }}>💳 Последние операции</div>
-              <a href="#transactions" style={{ color: COLORS.accent, textDecoration:'none', fontSize:'13px' }}>Все →</a>
-            </div>
-            {transactions.length === 0 ? <div style={{ color: COLORS.textSecondary, textAlign:'center', padding:'20px 0', fontSize:'13px' }}>Операций нет</div> : (
-              <div style={{ display:'flex', flexDirection:'column', gap:'2px' }}>
-                {transactions.map((tx, i) => {
-                  const isIncome = (tx.transaction_type||'').toLowerCase() === 'income';
-                  return (
-                    <div key={i} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'8px 0', borderBottom: i<transactions.length-1?`1px solid ${COLORS.border}`:'none' }}>
-                      <div><div style={{ fontSize:'13px', fontWeight:500 }}>{tx.description||'Операция'}</div><div style={{ fontSize:'11px', color: COLORS.textSecondary }}>{(tx.payment_date||'').split('T')[0]}</div></div>
-                      <span style={{ fontWeight:700, fontSize:'14px', color: isIncome?COLORS.green:COLORS.red }}>{isIncome?'+':'-'}{formatCurrency(Math.abs(parseFloat(tx.amount)||0))}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        ),
-        forecast: forecast ? (
-          <div key="forecast" style={{ background: COLORS.white, borderRadius: '14px', padding: '22px', border: `1px solid ${COLORS.border}` }}>
-            <div style={{ fontWeight:600, fontSize:'15px', marginBottom:'14px' }}>🔮 Прогноз на 30 дней</div>
+            }
+          </W>
+        );
+        if (id === 'transactions') return (
+          <W key="transactions" title="💳 Последние операции" link="#transactions">
+            {transactions.length === 0
+              ? <div style={{ color:COLORS.textSecondary, textAlign:'center', padding:'20px 0', fontSize:'13px' }}>Операций нет</div>
+              : <div style={{ display:'flex', flexDirection:'column', gap:'2px' }}>
+                  {transactions.map((tx, i) => {
+                    const isInc = (tx.transaction_type||'').toLowerCase() === 'income';
+                    return (
+                      <div key={i} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'8px 0', borderBottom: i < transactions.length-1 ? '1px solid '+COLORS.border : 'none' }}>
+                        <div>
+                          <div style={{ fontSize:'13px', fontWeight:500 }}>{tx.description||'Операция'}</div>
+                          <div style={{ fontSize:'11px', color:COLORS.textSecondary }}>{(tx.payment_date||'').split('T')[0]}</div>
+                        </div>
+                        <span style={{ fontWeight:700, fontSize:'14px', color:isInc?COLORS.green:COLORS.red }}>{isInc?'+':'-'}{formatCurrency(Math.abs(parseFloat(tx.amount)||0))}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+            }
+          </W>
+        );
+        if (id === 'forecast') return forecast ? (
+          <W key="forecast" title="🔮 Прогноз на 30 дней">
             {[
-              { l:'Баланс сейчас', v: formatCurrency(forecast.current_balance) },
-              { l:'Прогноз', v: formatCurrency(forecast.forecasted_balance), c: forecast.forecasted_balance>=0?COLORS.green:COLORS.red },
-              { l:'Burn rate / день', v: formatCurrency(forecast.burn_rate), c: COLORS.red },
-            ].map(({l,v,c})=>(
-              <div key={l} style={{ display:'flex', justifyContent:'space-between', fontSize:'13px', marginBottom:'8px' }}>
-                <span style={{ color: COLORS.textSecondary }}>{l}</span>
-                <span style={{ fontWeight:700, color: c||COLORS.text }}>{v}</span>
-              </div>
-            ))}
-            {forecast.cash_gap_risk && <div style={{ marginTop:'8px', padding:'8px 12px', background:'#fef2f2', borderRadius:'8px', fontSize:'12px', color: COLORS.red, fontWeight:600 }}>⚠️ Риск кассового разрыва</div>}
-          </div>
-        ) : null,
-        summary: (
-          <div key="summary" style={{ background: COLORS.white, borderRadius: '14px', padding: '22px', border: `1px solid ${COLORS.border}` }}>
-            <div style={{ fontWeight:600, fontSize:'15px', marginBottom:'14px' }}>📋 Сводка</div>
+              { l:'Баланс сейчас', v: formatCurrency(forecast.current_balance || 0) },
+              { l:'Прогноз',       v: formatCurrency(forecast.forecasted_balance || 0), c: (forecast.forecasted_balance||0)>=0?COLORS.green:COLORS.red },
+              { l:'Burn rate/день',v: formatCurrency(forecast.burn_rate || 0), c: COLORS.red },
+            ].map(function(item) {
+              return (
+                <div key={item.l} style={{ display:'flex', justifyContent:'space-between', fontSize:'13px', marginBottom:'8px' }}>
+                  <span style={{ color:COLORS.textSecondary }}>{item.l}</span>
+                  <span style={{ fontWeight:700, color:item.c||COLORS.text }}>{item.v}</span>
+                </div>
+              );
+            })}
+            {forecast.cash_gap_risk && <div style={{ marginTop:'8px', padding:'8px 12px', background:'#fef2f2', borderRadius:'8px', fontSize:'12px', color:COLORS.red, fontWeight:600 }}>⚠️ Риск кассового разрыва</div>}
+          </W>
+        ) : null;
+        if (id === 'summary') return (
+          <W key="summary" title="📋 Сводка">
             {[
-              { l:'🎯 Сделок в воронке',    v: crmStats?.pipeline ?? '—',   href:'#crm' },
-              { l:'💰 Сумма воронки',        v: crmStats ? formatCurrency(crmStats.pipelineValue) : '—', href:'#crm' },
-              { l:'🏆 Закрыто сделок',       v: crmStats?.won ?? '—',        href:'#crm' },
-              { l:'🔔 Непрочитанных алертов',v: alerts.unread_count||0,       href:'#alerts', warn:(alerts.unread_count||0)>0 },
-            ].map(({l,v,href,warn})=>(
-              <div key={l} style={{ display:'flex', justifyContent:'space-between', fontSize:'13px', marginBottom:'8px' }}>
-                <a href={href} style={{ color: COLORS.textSecondary, textDecoration:'none' }}>{l}</a>
-                <span style={{ fontWeight:700, color: warn?COLORS.red:COLORS.text }}>{v}</span>
-              </div>
-            ))}
-          </div>
-        ),
-        budgets: budgetData ? (
-          <div key="budgets" style={{ background: COLORS.white, borderRadius: '14px', padding: '22px', border: `1px solid ${COLORS.border}` }}>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px' }}>
-              <div style={{ fontWeight:600, fontSize:'15px' }}>💰 Бюджеты (текущий месяц)</div>
-              <a href="#budgets" style={{ color: COLORS.accent, textDecoration:'none', fontSize:'13px' }}>Подробнее →</a>
-            </div>
-            {(budgetData.rows||[]).filter(r=>parseFloat(r.plan_amount)>0).slice(0,5).map(r=>{
-              const pct2 = parseFloat(r.execution_pct)||0;
-              const color = r.category_type==='income' ? (pct2>=100?COLORS.green:pct2>=70?'#f59e0b':COLORS.red) : (pct2<=90?COLORS.green:pct2<=110?'#f59e0b':COLORS.red);
+              { l:'🎯 Сделок в воронке',     v: crmStats ? crmStats.pipeline : '—',  href:'#crm' },
+              { l:'💰 Сумма воронки',         v: crmStats ? formatCurrency(crmStats.pipelineValue) : '—', href:'#crm' },
+              { l:'🏆 Закрыто сделок',        v: crmStats ? crmStats.won : '—',       href:'#crm' },
+              { l:'🔔 Непрочитанных алертов', v: alerts.unread_count||0, href:'#alerts', warn:(alerts.unread_count||0)>0 },
+            ].map(function(item) {
+              return (
+                <div key={item.l} style={{ display:'flex', justifyContent:'space-between', fontSize:'13px', marginBottom:'8px' }}>
+                  <a href={item.href} style={{ color:COLORS.textSecondary, textDecoration:'none' }}>{item.l}</a>
+                  <span style={{ fontWeight:700, color:item.warn?COLORS.red:COLORS.text }}>{item.v}</span>
+                </div>
+              );
+            })}
+          </W>
+        );
+        if (id === 'budgets') return budgetData ? (
+          <W key="budgets" title="💰 Бюджеты (текущий месяц)" link="#budgets" linkLabel="Подробнее →">
+            {(budgetData.rows||[]).filter(function(r){ return parseFloat(r.plan_amount)>0; }).slice(0,5).map(function(r) {
+              var p = parseFloat(r.execution_pct)||0;
+              var col = r.category_type==='income'
+                ? (p>=100?COLORS.green : p>=70?'#f59e0b' : COLORS.red)
+                : (p<=90?COLORS.green  : p<=110?'#f59e0b' : COLORS.red);
               return (
                 <div key={r.category_id} style={{ marginBottom:'10px' }}>
                   <div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', marginBottom:'4px' }}>
                     <span style={{ fontWeight:500 }}>{r.category_name}</span>
-                    <span style={{ color, fontWeight:700 }}>{Math.round(pct2)}%</span>
+                    <span style={{ color:col, fontWeight:700 }}>{Math.round(p)}%</span>
                   </div>
-                  <div style={{ height:'6px', borderRadius:'3px', background: COLORS.border, overflow:'hidden' }}>
-                    <div style={{ height:'100%', borderRadius:'3px', width: Math.min(pct2,100)+'%', background: color, transition:'width 0.4s' }} />
+                  <div style={{ height:'6px', borderRadius:'3px', background:COLORS.border, overflow:'hidden' }}>
+                    <div style={{ height:'100%', borderRadius:'3px', width:Math.min(p,100)+'%', background:col }} />
                   </div>
                 </div>
               );
             })}
-            {(budgetData.rows||[]).filter(r=>parseFloat(r.plan_amount)>0).length===0 && <div style={{ fontSize:'13px', color: COLORS.textSecondary, textAlign:'center', padding:'10px 0' }}>Планы не установлены</div>}
-          </div>
-        ) : null,
-        payments: (
-          <div key="payments" style={{ background: COLORS.white, borderRadius: '14px', padding: '22px', border: `1px solid ${COLORS.border}` }}>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px' }}>
-              <div style={{ fontWeight:600, fontSize:'15px' }}>📅 Ближайшие платежи</div>
-              <a href="#calendar" style={{ color: COLORS.accent, textDecoration:'none', fontSize:'13px' }}>Календарь →</a>
-            </div>
-            {payments.length===0 ? <div style={{ fontSize:'13px', color: COLORS.textSecondary, textAlign:'center', padding:'10px 0' }}>Нет запланированных</div> : (
-              payments.map((p,i)=>(
-                <div key={i} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'8px 0', borderBottom: i<payments.length-1?`1px solid ${COLORS.border}`:'none' }}>
-                  <div><div style={{ fontSize:'13px', fontWeight:500 }}>{p.description||'Платёж'}</div><div style={{ fontSize:'11px', color: COLORS.textSecondary }}>{p.planned_date}</div></div>
-                  <span style={{ fontWeight:700, fontSize:'14px', color: COLORS.accent }}>{formatCurrency(parseFloat(p.amount))}</span>
-                </div>
-              ))
+            {(budgetData.rows||[]).filter(function(r){ return parseFloat(r.plan_amount)>0; }).length===0 && (
+              <div style={{ fontSize:'13px', color:COLORS.textSecondary, textAlign:'center', padding:'10px 0' }}>Планы не установлены</div>
             )}
-          </div>
-        ),
+          </W>
+        ) : null;
+        if (id === 'payments') return (
+          <W key="payments" title="📅 Ближайшие платежи" link="#calendar" linkLabel="Календарь →">
+            {payments.length===0
+              ? <div style={{ fontSize:'13px', color:COLORS.textSecondary, textAlign:'center', padding:'10px 0' }}>Нет запланированных</div>
+              : payments.map(function(p, i) {
+                  return (
+                    <div key={i} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'8px 0', borderBottom: i<payments.length-1?'1px solid '+COLORS.border:'none' }}>
+                      <div>
+                        <div style={{ fontSize:'13px', fontWeight:500 }}>{p.description||'Платёж'}</div>
+                        <div style={{ fontSize:'11px', color:COLORS.textSecondary }}>{p.planned_date}</div>
+                      </div>
+                      <span style={{ fontWeight:700, fontSize:'14px', color:COLORS.accent }}>{formatCurrency(parseFloat(p.amount||0))}</span>
+                    </div>
+                  );
+                })
+            }
+          </W>
+        );
+        return null;
       };
 
-      const visibleWidgets = widgetOrder.filter(id => !hiddenWidgets.includes(id));
+      const visibleWidgets = widgetOrder.filter(function(id){ return !hiddenWidgets.includes(id); });
 
       return (
         <div style={{ padding: '24px' }}>
 
           {/* Кнопка настройки */}
           <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:'16px' }}>
-            <button onClick={()=>setShowSettings(true)}
-              style={{ display:'flex', alignItems:'center', gap:'6px', padding:'8px 16px', border:`1px solid ${COLORS.border}`, borderRadius:'8px', background: COLORS.white, cursor:'pointer', fontSize:'13px', fontWeight:600, color: COLORS.text, boxShadow:'0 1px 3px rgba(0,0,0,0.05)' }}>
+            <button onClick={function(){ setShowSettings(true); }}
+              style={{ padding:'8px 18px', border:'1px solid '+COLORS.border, borderRadius:'8px', background:COLORS.white, cursor:'pointer', fontSize:'13px', fontWeight:600, color:COLORS.text }}>
               ⚙️ Настроить дашборд
             </button>
           </div>
 
           {/* Виджеты */}
           <div style={{ display:'flex', flexDirection:'column', gap:'16px' }}>
-            {visibleWidgets.map(id => WIDGET_RENDER[id] || null)}
+            {visibleWidgets.map(function(id){ return renderWidget(id); })}
           </div>
 
-          {/* Модал настройки */}
+          {/* Панель настройки */}
           {showSettings && (
-            <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.5)', display:'flex', alignItems:'flex-start', justifyContent:'flex-end', zIndex:1000 }}
-              onClick={e=>{ if(e.target===e.currentTarget) setShowSettings(false); }}>
+            <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'rgba(0,0,0,0.5)', display:'flex', alignItems:'flex-start', justifyContent:'flex-end', zIndex:1000 }}
+              onClick={function(e){ if(e.target===e.currentTarget) setShowSettings(false); }}>
               <div style={{ background: COLORS.white, width:'360px', height:'100%', padding:'28px', overflowY:'auto', boxShadow:'-4px 0 30px rgba(0,0,0,0.15)' }}>
                 <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'20px' }}>
                   <h3 style={{ fontSize:'18px', fontWeight:700 }}>⚙️ Настройка дашборда</h3>
