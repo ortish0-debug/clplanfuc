@@ -895,146 +895,199 @@
 
     const Budgets = () => {
       const { companyId } = useAuth();
-      const [budgets, setBudgets] = useState([]);
-      const [loading, setLoading] = useState(true);
-      const [month, setMonth] = useState(new Date().getMonth() + 1);
-      const [year, setYear] = useState(new Date().getFullYear());
-      const [toast, setToast] = useState(null);
+      const [data, setData]         = useState(null);
+      const [loading, setLoading]   = useState(true);
+      const [month, setMonth]       = useState(new Date().getMonth() + 1);
+      const [year, setYear]         = useState(new Date().getFullYear());
+      const [toast, setToast]       = useState(null);
       const [editingId, setEditingId] = useState(null);
       const [editValue, setEditValue] = useState('');
 
-      const fetchBudgets = async () => {
+      const MONTHS = ['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
+
+      const load = async () => {
         setLoading(true);
         const res = await apiCall('GET', `/companies/${companyId}/budgets/plan-fact?year=${year}&month=${month}`);
-        if (res.success) {
-          // Парсим правильную структуру ответа
-          let budgetsList = [];
-          if (res.data.rows) {
-            budgetsList = res.data.rows;  // PlanFactReportResponse имеет rows
-          } else if (res.data.budgets) {
-            budgetsList = res.data.budgets;
-          } else if (Array.isArray(res.data)) {
-            budgetsList = res.data;
-          }
-          setBudgets(budgetsList);
-        }
+        if (res.success) setData(res.data);
         setLoading(false);
       };
 
-      useEffect(() => {
-        fetchBudgets();
-      }, [companyId, year, month]);
+      useEffect(() => { if (companyId) load(); }, [companyId, year, month]);
 
-      const handleEditPlan = (budget) => {
-        setEditingId(budget.id || budget.name);
-        setEditValue((budget.plan || 0).toString());
-      };
-
-      const handleSavePlan = async (categoryId) => {
-        const plan = parseFloat(editValue) || 0;
-        if (plan <= 0) {
-          setToast({ type: 'error', message: 'Сумма должна быть больше 0' });
-          return;
-        }
+      const savePlan = async (categoryId) => {
+        const plan = parseFloat(editValue);
+        if (!plan || plan < 0) { setToast({ type: 'error', message: 'Введите корректную сумму' }); return; }
         const res = await apiCall('POST', `/companies/${companyId}/budgets/save`, {
-          category_id: categoryId.toString(),
-          month: month,
-          year: year,
-          plan_amount: plan
+          category_id: categoryId, month, year, plan_amount: plan,
         });
         if (res.success) {
-          setToast({ type: 'success', message: 'План обновлен' });
-          setEditingId(null);
-          setEditValue('');
-          fetchBudgets();
+          setToast({ type: 'success', message: 'План сохранён' });
+          setEditingId(null); setEditValue(''); load();
+        } else setToast({ type: 'error', message: res.error });
+      };
+
+      // Цвет прогресс-бара: расход — чем больше факт, тем опаснее; доход — наоборот
+      const barColor = (pct, type) => {
+        if (type === 'income') {
+          if (pct >= 100) return COLORS.green;
+          if (pct >= 70)  return '#f59e0b';
+          return COLORS.red;
         } else {
-          setToast({ type: 'error', message: res.error });
+          if (pct <= 90)  return COLORS.green;
+          if (pct <= 110) return '#f59e0b';
+          return COLORS.red;
         }
       };
 
-      if (loading) return <LoadingSpinner />;
+      const BudgetRow = ({ b }) => {
+        const id = b.category_id;
+        const isEditing = editingId === id;
+        const plan = parseFloat(b.plan_amount) || 0;
+        const fact = parseFloat(b.fact_amount) || 0;
+        const pct  = plan > 0 ? Math.round((fact / plan) * 100) : (fact > 0 ? 999 : 0);
+        const dev  = fact - plan;
+        const color = barColor(pct, b.category_type);
+
+        return (
+          <div style={{ padding: '14px 20px', borderBottom: `1px solid ${COLORS.border}`, display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+            <div style={{ flex: '2', minWidth: '140px', fontWeight: 500, fontSize: '14px' }}>{b.category_name}</div>
+
+            {/* План */}
+            <div style={{ flex: '1', minWidth: '120px', textAlign: 'right' }}>
+              {isEditing ? (
+                <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end', alignItems: 'center' }}>
+                  <input type="number" value={editValue} onChange={e => setEditValue(e.target.value)}
+                    autoFocus onKeyDown={e => { if (e.key==='Enter') savePlan(id); if (e.key==='Escape') setEditingId(null); }}
+                    style={{ width: '110px', padding: '6px 10px', border: `1.5px solid ${COLORS.accent}`, borderRadius: '6px', fontSize: '14px', textAlign: 'right', fontFamily: 'Inter, sans-serif' }} />
+                  <button onClick={() => savePlan(id)} style={{ background: COLORS.green, border:'none', color:'#fff', borderRadius:'6px', padding:'5px 8px', cursor:'pointer', fontSize:'13px' }}>✓</button>
+                  <button onClick={() => setEditingId(null)} style={{ background: COLORS.grayLight, border:'none', borderRadius:'6px', padding:'5px 8px', cursor:'pointer', fontSize:'13px' }}>✕</button>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', justifyContent: 'flex-end' }}>
+                  <span style={{ color: plan===0 ? COLORS.textSecondary : COLORS.text }}>{plan===0 ? '—' : formatCurrency(plan)}</span>
+                  <button onClick={() => { setEditingId(id); setEditValue(plan > 0 ? String(plan) : ''); }}
+                    style={{ background:'none', border:'none', cursor:'pointer', color: COLORS.textSecondary, fontSize:'14px', padding:'2px 4px' }} title="Изменить план">✎</button>
+                </div>
+              )}
+            </div>
+
+            {/* Факт */}
+            <div style={{ flex:'1', minWidth:'100px', textAlign:'right', fontWeight:600, fontSize:'14px', color: fact===0 ? COLORS.textSecondary : COLORS.text }}>
+              {fact===0 ? '—' : formatCurrency(fact)}
+            </div>
+
+            {/* Прогресс */}
+            <div style={{ flex:'2', minWidth:'180px' }}>
+              {plan > 0 ? (
+                <>
+                  <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'4px', fontSize:'12px' }}>
+                    <span style={{ color: color, fontWeight:700 }}>{Math.min(pct,999)}%</span>
+                    <span style={{ color: dev===0 ? COLORS.textSecondary : dev > 0 ? COLORS.green : COLORS.red, fontWeight:600 }}>
+                      {dev===0 ? '0' : (dev > 0 ? '+' : '')}{formatCurrency(dev)}
+                    </span>
+                  </div>
+                  <div style={{ height:'8px', borderRadius:'4px', background: COLORS.border, overflow:'hidden' }}>
+                    <div style={{ height:'100%', borderRadius:'4px', width: Math.min(pct,100)+'%', background: color, transition:'width 0.4s ease' }} />
+                  </div>
+                </>
+              ) : (
+                <div style={{ fontSize:'12px', color: COLORS.textSecondary }}>
+                  {fact > 0 ? <span style={{ color: COLORS.red }}>⚠️ Нет плана</span> : 'Установите план →'}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      };
+
+      if (loading) return <div style={{ padding:'24px' }}><LoadingSpinner /></div>;
+
+      const rows = data?.rows || [];
+      const income  = rows.filter(r => r.category_type === 'income');
+      const expense = rows.filter(r => r.category_type === 'expense');
+
+      const totalIncomePlan  = parseFloat(data?.total_income_plan  || 0);
+      const totalIncomeFact  = parseFloat(data?.total_income_fact  || 0);
+      const totalExpensePlan = parseFloat(data?.total_expense_plan || 0);
+      const totalExpenseFact = parseFloat(data?.total_expense_fact || 0);
+      const netPlan = parseFloat(data?.net_plan || 0);
+      const netFact = parseFloat(data?.net_fact || 0);
+
+      const SummaryCard = ({ label, plan, fact, type }) => {
+        const pct = plan > 0 ? Math.round((fact/plan)*100) : null;
+        const color = pct != null ? barColor(pct, type) : COLORS.textSecondary;
+        return (
+          <div style={{ background: COLORS.white, borderRadius:'12px', padding:'18px 22px', flex:1, minWidth:'180px', boxShadow:'0 1px 4px rgba(0,0,0,0.07)' }}>
+            <div style={{ fontSize:'12px', color: COLORS.textSecondary, marginBottom:'8px' }}>{label}</div>
+            <div style={{ fontSize:'22px', fontWeight:700, color: type==='net' ? (fact>=0?COLORS.green:COLORS.red) : COLORS.text }}>{formatCurrency(fact)}</div>
+            <div style={{ fontSize:'12px', color: COLORS.textSecondary, marginTop:'4px' }}>
+              план: {formatCurrency(plan)}
+              {pct != null && <span style={{ marginLeft:'8px', fontWeight:700, color }}>{pct}%</span>}
+            </div>
+          </div>
+        );
+      };
 
       return (
-        <div style={{ padding: '32px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
-            <h2 style={{ fontSize: '24px', fontWeight: 600 }}>Бюджеты</h2>
-            <div style={{ display: 'flex', gap: '12px' }}>
-              <select value={month} onChange={(e) => setMonth(parseInt(e.target.value))} style={{ padding: '8px 12px', borderRadius: '8px', border: `1px solid ${COLORS.border}` }}>
-                {['Янв', 'Фев', 'Мар', 'Апр', 'Май', 'Июн', 'Июл', 'Авг', 'Сен', 'Окт', 'Ноя', 'Дек'].map((m, i) => (<option key={i} value={i+1}>{m}</option>))}
+        <div style={{ padding:'24px' }}>
+          {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+
+          {/* Шапка */}
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'20px', flexWrap:'wrap', gap:'12px' }}>
+            <div style={{ fontSize:'13px', color: COLORS.textSecondary }}>
+              {MONTHS[month-1]} {year} — нажмите ✎ чтобы установить план по статье
+            </div>
+            <div style={{ display:'flex', gap:'8px' }}>
+              <select value={month} onChange={e => setMonth(parseInt(e.target.value))}
+                style={{ padding:'8px 12px', borderRadius:'8px', border:`1px solid ${COLORS.border}`, fontFamily:'Inter, sans-serif' }}>
+                {MONTHS.map((m,i) => <option key={i} value={i+1}>{m}</option>)}
               </select>
-              <select value={year} onChange={(e) => setYear(parseInt(e.target.value))} style={{ padding: '8px 12px', borderRadius: '8px', border: `1px solid ${COLORS.border}` }}>
-                {[2024, 2025, 2026, 2027].map((y) => (<option key={y} value={y}>{y}</option>))}
+              <select value={year} onChange={e => setYear(parseInt(e.target.value))}
+                style={{ padding:'8px 12px', borderRadius:'8px', border:`1px solid ${COLORS.border}`, fontFamily:'Inter, sans-serif' }}>
+                {[2024,2025,2026,2027].map(y => <option key={y} value={y}>{y}</option>)}
               </select>
             </div>
           </div>
 
-          {budgets.length === 0 ? (
-            <div style={{ background: COLORS.white, borderRadius: '12px', padding: '60px 32px', textAlign: 'center', color: COLORS.textSecondary }}>
-              <div style={{ fontSize: '32px', marginBottom: '12px' }}>💰</div>
-              <div>Нет данных о бюджете за выбранный период</div>
-            </div>
-          ) : (
-            <div style={{ background: COLORS.white, borderRadius: '12px', overflow: 'hidden', border: `1px solid ${COLORS.border}` }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                <thead>
-                  <tr style={{ background: COLORS.grayLight, borderBottom: `1px solid ${COLORS.border}` }}>
-                    <th style={{ padding: '12px 16px', textAlign: 'left', fontSize: '12px', fontWeight: 600, color: COLORS.textSecondary, textTransform: 'uppercase' }}>Статья</th>
-                    <th style={{ padding: '12px 16px', textAlign: 'right', fontSize: '12px', fontWeight: 600, color: COLORS.textSecondary, textTransform: 'uppercase' }}>План</th>
-                    <th style={{ padding: '12px 16px', textAlign: 'right', fontSize: '12px', fontWeight: 600, color: COLORS.textSecondary, textTransform: 'uppercase' }}>Факт</th>
-                    <th style={{ padding: '12px 16px', textAlign: 'right', fontSize: '12px', fontWeight: 600, color: COLORS.textSecondary, textTransform: 'uppercase' }}>Отклонение</th>
-                    <th style={{ padding: '12px 16px', textAlign: 'center', fontSize: '12px', fontWeight: 600, color: COLORS.textSecondary, textTransform: 'uppercase' }}>Выполнение</th>
-                    <th style={{ padding: '12px 16px', textAlign: 'center', fontSize: '12px', fontWeight: 600, color: COLORS.textSecondary, textTransform: 'uppercase' }}>Действия</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {budgets.map((b, i) => {
-                    const budgetId = b.id || b.category_id || b.name;
-                    const isEditing = editingId === budgetId;
-                    const plan = isEditing ? parseFloat(editValue) || 0 : (b.plan_amount || b.plan || 0);
-                    const fact = b.fact_amount || b.fact || 0;
-                    const diff = fact - plan;
-                    const percent = plan > 0 ? Math.round((fact / plan) * 100) : 0;
-                    return (
-                      <tr key={i} style={{ borderBottom: `1px solid ${COLORS.border}`, position: 'relative' }}>
-                        <td style={{ padding: '12px 16px', fontSize: '14px', fontWeight: 500 }}>{b.category_name || b.category || b.name || 'Статья'}</td>
-                        <td style={{ padding: '12px 16px', textAlign: 'right', fontSize: '14px' }}>
-                          {isEditing ? (
-                            <input type="number" value={editValue} onChange={(e) => setEditValue(e.target.value)} style={{ width: '120px', padding: '6px', border: `1.5px solid ${COLORS.accent}`, borderRadius: '4px', fontSize: '14px', fontWeight: 600 }} autoFocus />
-                          ) : (
-                            formatCurrency(plan)
-                          )}
-                        </td>
-                        <td style={{ padding: '12px 16px', textAlign: 'right', fontSize: '14px', fontWeight: 600 }}>{formatCurrency(fact)}</td>
-                        <td style={{ padding: '12px 16px', textAlign: 'right', fontSize: '14px', fontWeight: 600, color: diff >= 0 ? COLORS.green : COLORS.red }}>
-                          {diff >= 0 ? '+' : ''}{formatCurrency(diff)}
-                        </td>
-                        <td style={{ padding: '12px 16px', textAlign: 'center' }}>
-                          <div style={{ position: 'relative', height: '24px', background: COLORS.grayLight, borderRadius: '4px', overflow: 'hidden' }}>
-                            <div style={{ position: 'absolute', top: 0, left: 0, height: '100%', width: Math.min(percent, 100) + '%', background: percent >= 100 ? COLORS.green : COLORS.accent, transition: 'width 0.3s' }} />
-                            <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', fontWeight: 600, color: COLORS.text }}>
-                              {percent}%
-                            </div>
-                          </div>
-                        </td>
-                        <td style={{ padding: '12px 16px', textAlign: 'center', fontSize: '14px', position: 'relative', zIndex: 20, pointerEvents: 'auto' }}>
-                          {isEditing ? (
-                            <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
-                              <button onClick={() => handleSavePlan(budgetId)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '14px', color: COLORS.green, fontWeight: 600 }}>✓</button>
-                              <button onClick={() => { setEditingId(null); setEditValue(''); }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '14px', color: COLORS.red, fontWeight: 600 }}>✕</button>
-                            </div>
-                          ) : (
-                            <button onClick={() => handleEditPlan(b)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '16px', color: COLORS.accent }}>✏️</button>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+          {/* Сводные карточки */}
+          <div style={{ display:'flex', gap:'14px', marginBottom:'24px', flexWrap:'wrap' }}>
+            <SummaryCard label="📈 Доходы (факт / план)" plan={totalIncomePlan}  fact={totalIncomeFact}  type="income" />
+            <SummaryCard label="📉 Расходы (факт / план)" plan={totalExpensePlan} fact={totalExpenseFact} type="expense" />
+            <SummaryCard label="💎 Прибыль (факт / план)" plan={netPlan}          fact={netFact}          type="net" />
+          </div>
+
+          {/* Инструкция если все планы нулевые */}
+          {rows.every(r => parseFloat(r.plan_amount)===0) && (
+            <div style={{ background:'#eff6ff', border:'1px solid #bfdbfe', borderRadius:'12px', padding:'16px 20px', marginBottom:'20px', display:'flex', alignItems:'center', gap:'12px' }}>
+              <span style={{ fontSize:'20px' }}>💡</span>
+              <div style={{ fontSize:'13px', color:'#1e40af' }}>
+                <b>Как использовать бюджеты:</b> добавьте операции с категорией (Аренда, Зарплата и т.д.),
+                затем нажмите ✎ рядом с нужной статьёй и установите плановую сумму.
+              </div>
             </div>
           )}
 
-          {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+          {/* Доходы */}
+          {income.length > 0 && (
+            <div style={{ background: COLORS.white, borderRadius:'14px', overflow:'hidden', boxShadow:'0 1px 4px rgba(0,0,0,0.07)', marginBottom:'16px' }}>
+              <div style={{ padding:'12px 20px', background:'#f0fdf4', borderBottom:`1px solid ${COLORS.border}`, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                <span style={{ fontWeight:700, fontSize:'14px', color: COLORS.green }}>📈 Доходы</span>
+                <span style={{ fontSize:'13px', color: COLORS.textSecondary }}>Статья · План · Факт · Выполнение</span>
+              </div>
+              {income.map(b => <BudgetRow key={b.category_id} b={b} />)}
+            </div>
+          )}
+
+          {/* Расходы */}
+          {expense.length > 0 && (
+            <div style={{ background: COLORS.white, borderRadius:'14px', overflow:'hidden', boxShadow:'0 1px 4px rgba(0,0,0,0.07)' }}>
+              <div style={{ padding:'12px 20px', background:'#fef2f2', borderBottom:`1px solid ${COLORS.border}`, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                <span style={{ fontWeight:700, fontSize:'14px', color: COLORS.red }}>📉 Расходы</span>
+                <span style={{ fontSize:'13px', color: COLORS.textSecondary }}>Статья · План · Факт · Выполнение</span>
+              </div>
+              {expense.map(b => <BudgetRow key={b.category_id} b={b} />)}
+            </div>
+          )}
         </div>
       );
     };
@@ -2891,7 +2944,8 @@
       const [showParserModal, setShowParserModal] = useState(false);
       const [toast, setToast] = useState(null);
       const [editingTx, setEditingTx] = useState(null);
-      const [formData, setFormData] = useState({ date: new Date().toISOString().split('T')[0], description: '', amount: '', type: 'expense', account_id: '' });
+      const [formData, setFormData] = useState({ date: new Date().toISOString().split('T')[0], description: '', amount: '', type: 'expense', account_id: '', category_id: '' });
+      const [categories, setCategories] = useState([]);
       const getFromDate = () => { const d = new Date(); d.setMonth(d.getMonth() - 3); return d.toISOString().split('T')[0]; };
       const [fromDate, setFromDate] = useState(getFromDate());
       const [toDate, setToDate] = useState(new Date().toISOString().split('T')[0]);
@@ -2922,9 +2976,18 @@
         }
       };
 
+      const fetchCategories = async () => {
+        const res = await apiCall('GET', `/companies/${companyId}/categories`);
+        if (res.success) {
+          const list = res.data.categories || (Array.isArray(res.data) ? res.data : []);
+          setCategories(list);
+        }
+      };
+
       useEffect(() => {
         fetchTransactions();
         fetchAccounts();
+        fetchCategories();
       }, [companyId]);
 
       const handleAddTransaction = async () => {
@@ -2942,7 +3005,8 @@
           description: formData.description,
           amount: parseFloat(formData.amount),
           transaction_type: formData.type === 'income' ? 'INCOME' : 'EXPENSE',
-          payment_date: formData.date
+          payment_date: formData.date,
+          ...(formData.category_id ? { category_id: formData.category_id } : {}),
         };
         const res = await apiCall('POST', `/companies/${companyId}/transactions`, payload);
         if (res.success) {
@@ -2974,6 +3038,7 @@
           amount: String(Math.abs(parseFloat(tx.amount) || 0)),
           type: (tx.transaction_type || 'expense').toLowerCase() === 'income' ? 'income' : 'expense',
           account_id: tx.account_id || '',
+          category_id: tx.category_id || '',
         });
         setShowModal(true);
       };
@@ -2990,6 +3055,7 @@
             amount: parseFloat(formData.amount),
             transaction_type: formData.type === 'income' ? 'INCOME' : 'EXPENSE',
             payment_date: formData.date,
+            ...(formData.category_id ? { category_id: formData.category_id } : {}),
           };
           const res = await apiCall('PATCH', `/companies/${companyId}/transactions/${editingTx.id}`, payload);
           if (res.success) {
@@ -3182,6 +3248,16 @@
                   </select>
                 </div>
               )}
+              <div>
+                <label style={{ display: 'block', marginBottom: '8px', fontWeight: 500 }}>Категория</label>
+                <select value={formData.category_id} onChange={(e) => setFormData({ ...formData, category_id: e.target.value })}
+                  style={{ width: '100%', padding: '10px 14px', border: `1.5px solid ${COLORS.border}`, borderRadius: '8px', fontSize: '14px', fontFamily: 'Inter, sans-serif', background: '#fff' }}>
+                  <option value="">— Без категории —</option>
+                  {categories.filter(c => c.category_type === (formData.type === 'income' ? 'income' : 'expense')).map(c => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+              </div>
               <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', marginTop: '16px' }}>
                 <Button variant="outline" onClick={() => { setShowModal(false); setEditingTx(null); setFormData({ date: new Date().toISOString().split('T')[0], description: '', amount: '', type: 'expense', account_id: '' }); }}>Отмена</Button>
                 <Button onClick={handleSaveTransaction}>{editingTx ? 'Сохранить' : 'Добавить'}</Button>

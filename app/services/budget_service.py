@@ -14,7 +14,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.models.finance import (
@@ -211,13 +211,25 @@ async def get_plan_fact_report(
     }
 
     # ── 3. Агрегируем факт из транзакций по accrual_date ───────────────────
+    # Если accrual_date заполнена — используем её, иначе payment_date
+    date_filter = or_(
+        and_(
+            Transaction.accrual_date.isnot(None),
+            Transaction.accrual_date >= date_from,
+            Transaction.accrual_date <= date_to,
+        ),
+        and_(
+            Transaction.accrual_date.is_(None),
+            Transaction.payment_date >= date_from,
+            Transaction.payment_date <= date_to,
+        ),
+    )
+
     fact_filters = [
         Transaction.company_id == company_id,
         Transaction.is_deleted.is_(False),
         Transaction.status    == TransactionStatus.CONFIRMED,
-        Transaction.accrual_date >= date_from,
-        Transaction.accrual_date <= date_to,
-        Transaction.accrual_date.isnot(None),
+        date_filter,
         # Переводы между счетами не учитываются в P&L
         Transaction.transaction_type != TransactionType.TRANSFER,
     ]
