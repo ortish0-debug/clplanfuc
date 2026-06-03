@@ -645,7 +645,7 @@
             left: 0,
             right: 0,
             bottom: 0,
-            background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+            background: 'linear-gradient(135deg, #ffb6c1 0%, #ff69b4 50%, #ff1493 100%)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -662,8 +662,14 @@
             }}
           >
             <div style={{ textAlign: 'center', marginBottom: '32px' }}>
-              <div style={{ fontSize: '32px', fontWeight: 700, marginBottom: '8px' }}>📊 ПланФакт</div>
-              <div style={{ color: COLORS.textSecondary, fontSize: '14px' }}>Финансовый учёт для бизнеса</div>
+              <div style={{ fontSize: '64px', marginBottom: '4px', lineHeight: 1 }}>🎀</div>
+              <div style={{ fontFamily: 'Georgia, serif', fontSize: '22px', fontWeight: 700, color: '#ff69b4', marginBottom: '2px', letterSpacing: '1px' }}>
+                Hello Kitty Finance
+              </div>
+              <div style={{ fontSize: '11px', color: '#ffb6c1', marginBottom: '10px', letterSpacing: '2px' }}>
+                ✦ ПланФакт ✦
+              </div>
+              <div style={{ color: COLORS.textSecondary, fontSize: '13px' }}>Финансовый учёт для бизнеса 🎀</div>
             </div>
 
             <div style={{ display: 'flex', gap: '12px', marginBottom: '32px' }}>
@@ -3024,7 +3030,8 @@
         <div style={{ padding: '24px' }}>
 
           {/* Кнопка настройки */}
-          <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:'16px' }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'16px' }}>
+            <div style={{ fontSize:'13px', color:'#ff69b4', fontWeight:600, letterSpacing:'1px' }}>🎀 Hello Kitty Finance</div>
             <button onClick={function(){ setShowSettings(true); }}
               style={{ padding:'8px 18px', border:'1px solid '+COLORS.border, borderRadius:'8px', background:COLORS.white, cursor:'pointer', fontSize:'13px', fontWeight:600, color:COLORS.text }}>
               ⚙️ Настроить дашборд
@@ -5782,6 +5789,8 @@
       const [showModal, setShowModal] = useState(false);
       const [editingDeal, setEditingDeal] = useState(null);
       const [toast, setToast] = useState(null);
+      const [dragOverCol, setDragOverCol] = useState(null);
+      const [draggingId, setDraggingId] = useState(null);
       const [formData, setFormData] = useState({
         title: '', counterparty_name: '', amount: '', probability: 50,
         expected_close_date: '', assigned_to: '', description: '', status: 'lead',
@@ -5858,6 +5867,27 @@
         });
         if (res.success) fetchDeals();
         else setToast({ message: res.error, type: 'error' });
+      };
+
+      // Drag-and-drop handlers
+      const onDragStart = (e, dealId) => {
+        setDraggingId(dealId);
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('dealId', dealId);
+      };
+      const onDragEnd = () => { setDraggingId(null); setDragOverCol(null); };
+      const onDragOver = (e, colKey) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOverCol(colKey); };
+      const onDragLeave = () => setDragOverCol(null);
+      const onDrop = async (e, colKey) => {
+        e.preventDefault();
+        setDragOverCol(null);
+        const dealId = e.dataTransfer.getData('dealId');
+        const deal = deals.find(d => d.id === dealId);
+        if (!deal || deal.status === colKey) return;
+        // Оптимистичное обновление
+        setDeals(prev => prev.map(d => d.id === dealId ? { ...d, status: colKey } : d));
+        const res = await apiCall('patch', `/companies/${companyId}/crm/deals/${dealId}/move`, { status: colKey });
+        if (!res.success) { setToast({ message: res.error, type: 'error' }); fetchDeals(); }
       };
 
       const openEdit = (deal) => {
