@@ -3310,90 +3310,264 @@
 
     const Calendar = () => {
       const { companyId } = useAuth();
-      const [calendar, setCalendar] = useState(null);
+      const [payments, setPayments] = useState([]);
+      const [transactions, setTransactions] = useState([]);
       const [loading, setLoading] = useState(true);
       const [month, setMonth] = useState(new Date().getMonth());
       const [year, setYear] = useState(new Date().getFullYear());
+      const [selectedDay, setSelectedDay] = useState(null);
+      const [showAddModal, setShowAddModal] = useState(false);
+      const [addDate, setAddDate] = useState('');
+      const [toast, setToast] = useState(null);
+      const [form, setForm] = useState({ description: '', amount: '', type: 'expense', planned_date: '' });
 
-      const monthNames = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
+      const MONTHS = ['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
+      const DOW = ['Пн','Вт','Ср','Чт','Пт','Сб','Вс'];
+      const today = new Date().toISOString().split('T')[0];
 
-      useEffect(() => {
-        const fetchCalendar = async () => {
-          setLoading(true);
-          const res = await apiCall('GET', `/companies/${companyId}/planning/calendar?year=${year}&month=${month + 1}`);
-          if (res.success) setCalendar(res.data);
-          setLoading(false);
-        };
-        fetchCalendar();
-      }, [companyId, year, month]);
-
-      const handlePrevMonth = () => {
-        if (month === 0) {
-          setMonth(11);
-          setYear(year - 1);
-        } else {
-          setMonth(month - 1);
+      const load = async () => {
+        setLoading(true);
+        // Берём payment-requests за ±2 месяца
+        const from = new Date(year, month - 1, 1).toISOString().split('T')[0];
+        const to   = new Date(year, month + 2, 0).toISOString().split('T')[0];
+        const [r1, r2] = await Promise.all([
+          apiCall('GET', `/companies/${companyId}/payment-requests`),
+          apiCall('GET', `/companies/${companyId}/transactions?limit=200`),
+        ]);
+        if (r1.success) {
+          const list = r1.data['payment-requests'] || r1.data.requests || (Array.isArray(r1.data) ? r1.data : []);
+          setPayments(list);
         }
+        if (r2.success) {
+          const list = r2.data.transactions || r2.data.items || (Array.isArray(r2.data) ? r2.data : []);
+          setTransactions(list);
+        }
+        setLoading(false);
       };
 
-      const handleNextMonth = () => {
-        if (month === 11) {
-          setMonth(0);
-          setYear(year + 1);
-        } else {
-          setMonth(month + 1);
+      useEffect(() => { if (companyId) load(); }, [companyId, year, month]);
+
+      const prevMonth = () => { if (month===0){setMonth(11);setYear(y=>y-1);}else setMonth(m=>m-1); };
+      const nextMonth = () => { if (month===11){setMonth(0);setYear(y=>y+1);}else setMonth(m=>m+1); };
+
+      // Строим карту дней для текущего месяца
+      const daysInMonth = new Date(year, month+1, 0).getDate();
+      const firstDow = ((new Date(year, month, 1).getDay() + 6) % 7); // 0=Пн
+
+      // Агрегируем по датам
+      const dayMap = {};
+      for (let d=1; d<=daysInMonth; d++) {
+        const key = `${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+        dayMap[key] = { income: 0, expense: 0, items: [] };
+      }
+
+      // Добавляем транзакции (факт)
+      transactions.forEach(tx => {
+        const d = (tx.payment_date||'').split('T')[0];
+        if (dayMap[d]) {
+          const amt = Math.abs(parseFloat(tx.amount)||0);
+          const isIncome = (tx.transaction_type||'').toLowerCase()==='income';
+          dayMap[d][isIncome?'income':'expense'] += amt;
+          dayMap[d].items.push({ label: tx.description, amount: amt, type: isIncome?'income':'expense', source: 'fact' });
         }
+      });
+
+      // Добавляем запланированные платежи
+      payments.forEach(p => {
+        const d = (p.planned_date||'').split('T')[0];
+        if (dayMap[d]) {
+          const amt = parseFloat(p.amount)||0;
+          const st  = p.status;
+          dayMap[d].items.push({ label: p.description||'Платёж', amount: amt, type: 'planned', status: st, source: 'planned', id: p.id });
+        }
+      });
+
+      // Накопительный баланс
+      let runBalance = 0;
+      const rows = [];
+      for (let d=1; d<=daysInMonth; d++) {
+        const key = `${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+        const cell = dayMap[key];
+        runBalance += cell.income - cell.expense;
+        rows.push({ key, day: d, ...cell, runBalance });
+      }
+
+      const totalIncome  = rows.reduce((s,r)=>s+r.income,0);
+      const totalExpense = rows.reduce((s,r)=>s+r.expense,0);
+      const plannedAmt   = payments.filter(p=>p.planned_date?.startsWith(`${year}-${String(month+1).padStart(2,'0')}`)).reduce((s,p)=>s+parseFloat(p.amount||0),0);
+
+      // Создание платежа
+      const handleCreate = async () => {
+        if (!form.amount || !form.planned_date) { setToast({type:'error',message:'Заполните сумму и дату'}); return; }
+        const payload = { amount: parseFloat(form.amount), planned_date: form.planned_date, description: form.description||'Платёж' };
+        const res = await apiCall('POST', `/companies/${companyId}/payment-requests`, payload);
+        if (res.success) {
+          setToast({type:'success',message:'Платёж запланирован'}); setShowAddModal(false);
+          setForm({description:'',amount:'',type:'expense',planned_date:''}); load();
+        } else setToast({type:'error',message:res.error});
       };
+
+      const selectedItems = selectedDay ? (dayMap[selectedDay]?.items || []) : [];
 
       if (loading) return <LoadingSpinner />;
 
-      const mockData = [
-        { date: '2026-06-01', income: 50000, expenses: 30000, balance: 20000 },
-        { date: '2026-06-02', income: 0, expenses: 5000, balance: 15000 },
-        { date: '2026-06-05', income: 100000, expenses: 0, balance: 115000 },
-        { date: '2026-06-10', income: 0, expenses: 80000, balance: 35000 },
-      ];
-
       return (
-        <div style={{ padding: '32px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
-            <h2 style={{ fontSize: '24px', fontWeight: 600 }}>Платёжный календарь</h2>
+        <div style={{ padding:'24px' }}>
+          {toast && <Toast message={toast.message} type={toast.type} onClose={()=>setToast(null)} />}
+
+          {/* Шапка */}
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'20px', flexWrap:'wrap', gap:'12px' }}>
+            <div style={{ display:'flex', alignItems:'center', gap:'16px' }}>
+              <button onClick={prevMonth} style={{ border:`1px solid ${COLORS.border}`, background:COLORS.white, borderRadius:'8px', padding:'8px 14px', cursor:'pointer', fontSize:'16px' }}>‹</button>
+              <span style={{ fontWeight:700, fontSize:'18px', minWidth:'160px', textAlign:'center' }}>{MONTHS[month]} {year}</span>
+              <button onClick={nextMonth} style={{ border:`1px solid ${COLORS.border}`, background:COLORS.white, borderRadius:'8px', padding:'8px 14px', cursor:'pointer', fontSize:'16px' }}>›</button>
+            </div>
+            <Button onClick={()=>{ setForm({...form, planned_date: today}); setShowAddModal(true); }}>+ Запланировать платёж</Button>
           </div>
 
-          <div style={{ background: COLORS.white, borderRadius: '12px', padding: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px', border: `1px solid ${COLORS.border}` }}>
-            <Button variant="outline" onClick={handlePrevMonth}>← Предыдущий</Button>
-            <h3 style={{ fontSize: '16px', fontWeight: 600 }}>{monthNames[month]} {year}</h3>
-            <Button variant="outline" onClick={handleNextMonth}>Следующий →</Button>
+          {/* Сводные карточки */}
+          <div style={{ display:'flex', gap:'12px', marginBottom:'20px', flexWrap:'wrap' }}>
+            {[
+              { label:'📈 Поступления (факт)', val: totalIncome,  color: COLORS.green },
+              { label:'📉 Выплаты (факт)',     val: totalExpense, color: COLORS.red },
+              { label:'💰 Кассовый остаток',  val: totalIncome-totalExpense, color: totalIncome-totalExpense>=0?COLORS.green:COLORS.red },
+              { label:'📋 Запланировано',     val: plannedAmt,   color: COLORS.accent },
+            ].map(c => (
+              <div key={c.label} style={{ background:COLORS.white, borderRadius:'12px', padding:'14px 18px', flex:1, minWidth:'160px', boxShadow:'0 1px 4px rgba(0,0,0,0.07)' }}>
+                <div style={{ fontSize:'12px', color:COLORS.textSecondary, marginBottom:'6px' }}>{c.label}</div>
+                <div style={{ fontSize:'20px', fontWeight:700, color:c.color }}>{formatCurrency(c.val)}</div>
+              </div>
+            ))}
           </div>
 
-          <div style={{ background: COLORS.white, borderRadius: '12px', overflow: 'hidden', border: `1px solid ${COLORS.border}` }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ background: COLORS.grayLight, borderBottom: `1px solid ${COLORS.border}` }}>
-                  <th style={{ padding: '12px 16px', textAlign: 'left', fontSize: '12px', fontWeight: 600, color: COLORS.textSecondary, textTransform: 'uppercase' }}>Дата</th>
-                  <th style={{ padding: '12px 16px', textAlign: 'right', fontSize: '12px', fontWeight: 600, color: COLORS.textSecondary, textTransform: 'uppercase' }}>Поступления</th>
-                  <th style={{ padding: '12px 16px', textAlign: 'right', fontSize: '12px', fontWeight: 600, color: COLORS.textSecondary, textTransform: 'uppercase' }}>Выплаты</th>
-                  <th style={{ padding: '12px 16px', textAlign: 'right', fontSize: '12px', fontWeight: 600, color: COLORS.textSecondary, textTransform: 'uppercase' }}>Остаток</th>
-                </tr>
-              </thead>
-              <tbody>
-                {mockData.map((row, i) => {
-                  const isNegative = row.balance < 0;
-                  const isZero = row.balance === 0;
+          <div style={{ display:'flex', gap:'16px', alignItems:'flex-start' }}>
+            {/* Сетка календаря */}
+            <div style={{ flex:1, background:COLORS.white, borderRadius:'14px', overflow:'hidden', boxShadow:'0 1px 4px rgba(0,0,0,0.07)' }}>
+              {/* Дни недели */}
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)', background:COLORS.grayLight, borderBottom:`1px solid ${COLORS.border}` }}>
+                {DOW.map(d => (
+                  <div key={d} style={{ padding:'10px 4px', textAlign:'center', fontSize:'12px', fontWeight:700, color:d==='Сб'||d==='Вс'?COLORS.red:COLORS.textSecondary }}>{d}</div>
+                ))}
+              </div>
+              {/* Ячейки */}
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)' }}>
+                {Array(firstDow).fill(null).map((_,i) => (
+                  <div key={'e'+i} style={{ minHeight:'72px', borderRight:`1px solid ${COLORS.border}`, borderBottom:`1px solid ${COLORS.border}`, background:'#fafafa' }} />
+                ))}
+                {rows.map(r => {
+                  const isToday    = r.key === today;
+                  const isPast     = r.key < today;
+                  const isSelected = selectedDay === r.key;
+                  const hasItems   = r.items.length > 0;
+                  const hasPlanned = r.items.some(i=>i.source==='planned');
+                  const isGap      = r.runBalance < 0;
+                  const dow = ((new Date(r.key).getDay()+6)%7);
+                  const isWeekend = dow===5||dow===6;
                   return (
-                    <tr key={i} style={{ background: isNegative ? COLORS.redLight : isZero ? COLORS.yellowLight : COLORS.white, borderBottom: `1px solid ${COLORS.border}` }}>
-                      <td style={{ padding: '12px 16px', fontSize: '14px' }}>{formatDate(row.date)}</td>
-                      <td style={{ padding: '12px 16px', fontSize: '14px', textAlign: 'right', color: COLORS.green, fontWeight: 600 }}>{formatCurrency(row.income)}</td>
-                      <td style={{ padding: '12px 16px', fontSize: '14px', textAlign: 'right', color: COLORS.red, fontWeight: 600 }}>{formatCurrency(row.expenses)}</td>
-                      <td style={{ padding: '12px 16px', fontSize: '14px', textAlign: 'right', fontWeight: 600, color: isNegative ? COLORS.red : COLORS.green }}>
-                        {isNegative ? '⚠️' : ''} {formatCurrency(row.balance)}
-                      </td>
-                    </tr>
+                    <div key={r.key}
+                      onClick={()=>setSelectedDay(isSelected?null:r.key)}
+                      style={{
+                        minHeight:'72px', padding:'6px 8px', cursor:'pointer',
+                        borderRight:`1px solid ${COLORS.border}`, borderBottom:`1px solid ${COLORS.border}`,
+                        background: isSelected ? '#eff6ff' : isGap ? '#fef2f2' : isToday ? '#f0fdf4' : isWeekend ? '#f9fafb' : COLORS.white,
+                        outline: isSelected ? `2px solid ${COLORS.accent}` : isToday ? `2px solid ${COLORS.green}` : 'none',
+                        transition:'background 0.15s',
+                      }}>
+                      <div style={{ fontWeight: isToday?700:400, fontSize:'13px', color: isPast&&!isToday?COLORS.textSecondary:COLORS.text, marginBottom:'4px' }}>
+                        {r.day}
+                        {isToday && <span style={{ marginLeft:'4px', fontSize:'10px', background:COLORS.green, color:'#fff', borderRadius:'4px', padding:'1px 4px' }}>сег</span>}
+                      </div>
+                      {r.income>0 && <div style={{ fontSize:'11px', color:COLORS.green, fontWeight:600, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>+{(r.income/1000).toFixed(0)}к</div>}
+                      {r.expense>0 && <div style={{ fontSize:'11px', color:COLORS.red, fontWeight:600, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>-{(r.expense/1000).toFixed(0)}к</div>}
+                      {hasPlanned && <div style={{ fontSize:'10px', color:COLORS.accent, marginTop:'2px' }}>📋 план</div>}
+                      {isGap && <div style={{ fontSize:'10px', color:COLORS.red, marginTop:'2px' }}>⚠️ разрыв</div>}
+                    </div>
                   );
                 })}
-              </tbody>
-            </table>
+              </div>
+            </div>
+
+            {/* Боковая панель — выбранный день или список предстоящих */}
+            <div style={{ width:'280px', flexShrink:0 }}>
+              {selectedDay ? (
+                <div style={{ background:COLORS.white, borderRadius:'14px', padding:'16px', boxShadow:'0 1px 4px rgba(0,0,0,0.07)' }}>
+                  <div style={{ fontWeight:700, fontSize:'15px', marginBottom:'12px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                    {new Date(selectedDay+'T00:00:00').toLocaleDateString('ru-RU',{day:'numeric',month:'long'})}
+                    <button onClick={()=>setSelectedDay(null)} style={{ background:'none',border:'none',cursor:'pointer',color:COLORS.textSecondary,fontSize:'18px' }}>×</button>
+                  </div>
+                  {selectedItems.length===0 ? (
+                    <div style={{ color:COLORS.textSecondary, fontSize:'13px', textAlign:'center', padding:'20px 0' }}>Нет операций</div>
+                  ) : selectedItems.map((item,i) => (
+                    <div key={i} style={{ padding:'10px 12px', borderRadius:'8px', marginBottom:'8px', background: item.source==='fact' ? (item.type==='income'?'#f0fdf4':'#fef2f2') : '#eff6ff', border:`1px solid ${item.source==='fact'?(item.type==='income'?'#bbf7d0':'#fecaca'):'#bfdbfe'}` }}>
+                      <div style={{ fontSize:'13px', fontWeight:500, marginBottom:'3px' }}>{item.label}</div>
+                      <div style={{ fontSize:'14px', fontWeight:700, color: item.source==='planned'?COLORS.accent:(item.type==='income'?COLORS.green:COLORS.red) }}>
+                        {item.source==='fact'?(item.type==='income'?'+':'-'):''}{formatCurrency(item.amount)}
+                      </div>
+                      {item.source==='planned' && <div style={{ fontSize:'11px', color:COLORS.textSecondary, marginTop:'2px' }}>
+                        {item.status==='approved'?'✅ Одобрен':item.status==='pending'?'⏳ На рассмотрении':'❌ Отклонён'}
+                      </div>}
+                    </div>
+                  ))}
+                  <button onClick={()=>{ setForm({...form, planned_date:selectedDay}); setShowAddModal(true); }}
+                    style={{ width:'100%', marginTop:'8px', padding:'8px', background:COLORS.accent, color:'#fff', border:'none', borderRadius:'8px', cursor:'pointer', fontWeight:600, fontSize:'13px' }}>
+                    + Добавить платёж
+                  </button>
+                </div>
+              ) : (
+                <div style={{ background:COLORS.white, borderRadius:'14px', padding:'16px', boxShadow:'0 1px 4px rgba(0,0,0,0.07)' }}>
+                  <div style={{ fontWeight:700, fontSize:'14px', marginBottom:'12px', color:COLORS.textSecondary }}>БЛИЖАЙШИЕ ПЛАТЕЖИ</div>
+                  {payments
+                    .filter(p => (p.planned_date||'') >= today)
+                    .sort((a,b)=>(a.planned_date||'').localeCompare(b.planned_date||''))
+                    .slice(0,8)
+                    .map((p,i) => {
+                      const isOverdue = (p.planned_date||'') < today;
+                      return (
+                        <div key={i} onClick={()=>setSelectedDay((p.planned_date||'').split('T')[0])}
+                          style={{ padding:'10px 12px', borderRadius:'8px', marginBottom:'8px', cursor:'pointer', background:'#f8fafc', border:`1px solid ${COLORS.border}`, transition:'background 0.15s' }}
+                          onMouseEnter={e=>e.currentTarget.style.background='#eff6ff'}
+                          onMouseLeave={e=>e.currentTarget.style.background='#f8fafc'}>
+                          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start' }}>
+                            <div style={{ fontSize:'12px', fontWeight:600, color:isOverdue?COLORS.red:COLORS.accent }}>
+                              {new Date((p.planned_date||'')+'T00:00:00').toLocaleDateString('ru-RU',{day:'numeric',month:'short'})}
+                            </div>
+                            <div style={{ fontSize:'13px', fontWeight:700, color:COLORS.text }}>{formatCurrency(parseFloat(p.amount))}</div>
+                          </div>
+                          <div style={{ fontSize:'12px', color:COLORS.textSecondary, marginTop:'2px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{p.description||'Платёж'}</div>
+                        </div>
+                      );
+                    })}
+                  {payments.filter(p=>(p.planned_date||'')>=today).length===0 && (
+                    <div style={{ color:COLORS.textSecondary, fontSize:'13px', textAlign:'center', padding:'20px 0' }}>Нет запланированных платежей</div>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
+
+          {/* Модал добавления платежа */}
+          {showAddModal && (
+            <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.5)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:1000 }} onClick={e=>{if(e.target===e.currentTarget)setShowAddModal(false)}}>
+              <div style={{ background:COLORS.white, borderRadius:'16px', padding:'28px', width:'400px', boxShadow:'0 20px 60px rgba(0,0,0,0.3)' }}>
+                <h3 style={{ fontSize:'18px', fontWeight:700, marginBottom:'20px' }}>Запланировать платёж</h3>
+                {[
+                  { label:'Описание', type:'text', key:'description', placeholder:'Аренда, зарплата...' },
+                  { label:'Сумма *', type:'number', key:'amount', placeholder:'0' },
+                  { label:'Дата *', type:'date', key:'planned_date', placeholder:'' },
+                ].map(f => (
+                  <div key={f.key} style={{ marginBottom:'14px' }}>
+                    <label style={{ display:'block', marginBottom:'6px', fontWeight:500, fontSize:'14px' }}>{f.label}</label>
+                    <input type={f.type} value={form[f.key]} onChange={e=>setForm({...form,[f.key]:e.target.value})} placeholder={f.placeholder}
+                      style={{ width:'100%', padding:'10px 14px', border:`1.5px solid ${COLORS.border}`, borderRadius:'8px', fontSize:'14px', fontFamily:'Inter,sans-serif', boxSizing:'border-box' }} />
+                  </div>
+                ))}
+                <div style={{ display:'flex', gap:'10px', marginTop:'20px' }}>
+                  <button onClick={()=>setShowAddModal(false)} style={{ flex:1, padding:'11px', background:COLORS.grayLight, border:'none', borderRadius:'8px', cursor:'pointer', fontWeight:600 }}>Отмена</button>
+                  <button onClick={handleCreate} style={{ flex:2, padding:'11px', background:COLORS.accent, color:'#fff', border:'none', borderRadius:'8px', cursor:'pointer', fontWeight:700, fontSize:'14px' }}>Запланировать</button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       );
     };
