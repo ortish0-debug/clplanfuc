@@ -2743,7 +2743,7 @@
           const today2 = new Date();
           const bMonth = today2.getMonth() + 1;
           const bYear  = today2.getFullYear();
-          const [cp, pp, cf, fc, acc, tx, mo, cs, al, bd, pm] = await Promise.all([
+          const [cp, pp, cf, fc, acc, tx, mo, cs, al, bd, pmRes] = await Promise.all([
             apiCall('GET', `/companies/${companyId}/reports/pl?start_date=${curStart}&end_date=${curEnd}`),
             apiCall('GET', `/companies/${companyId}/reports/pl?start_date=${prevStart}&end_date=${prevEnd}`),
             apiCall('GET', `/companies/${companyId}/reports/cashflow?start_date=${curStart}&end_date=${curEnd}`),
@@ -2775,8 +2775,8 @@
           }
           if (al.success) setAlerts(al.data);
           if (bd.success) setBudgetData(bd.data);
-          if (pm.success) {
-            const list = pm.data['payment-requests'] || pm.data.requests || (Array.isArray(pm.data) ? pm.data : []);
+          if (pmRes.success) {
+            const list = pmRes.data['payment-requests'] || pmRes.data.requests || (Array.isArray(pmRes.data) ? pmRes.data : []);
             const today3 = new Date().toISOString().split('T')[0];
             setPayments(list.filter(p => (p.planned_date||'') >= today3).sort((a,b)=>(a.planned_date||'').localeCompare(b.planned_date||'')).slice(0,5));
           }
