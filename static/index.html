@@ -5875,6 +5875,7 @@
         { label: '🔬 Аналитика', hash: '#analytics' },
         { label: '🤖 AI Парсер', hash: '#ai-parser' },
         { label: '🔔 Алерты', hash: '#alerts' },
+        { label: '🤖 Авто-правила', hash: '#auto-rules' },
         { label: '💰 Долги', hash: '#debts' },
         { label: '👥 Контрагенты', hash: '#counterparties' },
         { label: '📁 Проекты', hash: '#projects' },
@@ -6222,6 +6223,7 @@
         analytics: '🔬 Аналитика',
         'ai-parser': '🤖 AI Парсер транзакций',
         alerts: '🔔 Алерты и правила',
+        'auto-rules': '🤖 Правила авто-категоризации',
         debts: '💰 Реестр долгов',
         counterparties: '👥 Контрагенты',
         projects: '📁 Проекты',
@@ -6247,6 +6249,276 @@
               {children}
             </div>
           </div>
+        </div>
+      );
+    };
+
+    // ─────────────────────────────────────────────────────────
+    // Правила авто-категоризации
+    // ─────────────────────────────────────────────────────────
+    const AutoRulesPage = () => {
+      const { companyId } = useAuth();
+      const [rules, setRules]           = useState([]);
+      const [categories, setCategories] = useState([]);
+      const [loading, setLoading]       = useState(true);
+      const [toast, setToast]           = useState(null);
+      const [showModal, setShowModal]   = useState(false);
+      const [editingRule, setEditingRule] = useState(null);
+      const [applyResult, setApplyResult] = useState(null);
+      const [applying, setApplying]     = useState(false);
+      const [previewMatches, setPreviewMatches] = useState(null);
+
+      const emptyForm = { name:'', field_to_match:'description', match_type:'contains', pattern:'', suggested_category_id:'', priority:0, is_active:true };
+      const [form, setForm] = useState(emptyForm);
+
+      const FIELDS = [
+        { value:'description',      label:'Описание операции' },
+        { value:'counterparty_name',label:'Контрагент' },
+        { value:'counterparty_inn', label:'ИНН контрагента' },
+      ];
+      const TYPES = [
+        { value:'contains', label:'Содержит' },
+        { value:'exact',    label:'Точное совпадение' },
+        { value:'regex',    label:'Регулярное выражение' },
+      ];
+
+      const load = async () => {
+        setLoading(true);
+        const [r1, r2] = await Promise.all([
+          apiCall('GET', `/companies/${companyId}/auto-rules/`),
+          apiCall('GET', `/companies/${companyId}/categories`),
+        ]);
+        if (r1.success) setRules(r1.data.rules || []);
+        if (r2.success) setCategories(r2.data.categories || (Array.isArray(r2.data) ? r2.data : []));
+        setLoading(false);
+      };
+
+      useEffect(() => { if (companyId) load(); }, [companyId]);
+
+      const openCreate = () => { setEditingRule(null); setForm(emptyForm); setPreviewMatches(null); setShowModal(true); };
+      const openEdit   = (r) => {
+        setEditingRule(r);
+        setForm({ name:r.name, field_to_match:r.field_to_match, match_type:r.match_type, pattern:r.pattern,
+          suggested_category_id: r.suggested_category_id||'', priority:r.priority, is_active:r.is_active });
+        setPreviewMatches(null); setShowModal(true);
+      };
+
+      const handleSave = async () => {
+        if (!form.name || !form.pattern) { setToast({type:'error',message:'Заполните название и паттерн'}); return; }
+        const payload = { ...form, priority: parseInt(form.priority)||0,
+          suggested_category_id: form.suggested_category_id || null };
+        const res = editingRule
+          ? await apiCall('PATCH', `/companies/${companyId}/auto-rules/${editingRule.id}`, payload)
+          : await apiCall('POST',  `/companies/${companyId}/auto-rules/`, payload);
+        if (res.success) {
+          setToast({type:'success', message: editingRule ? 'Правило обновлено' : 'Правило создано'});
+          setShowModal(false); load();
+        } else setToast({type:'error', message:res.error});
+      };
+
+      const handleDelete = async (id) => {
+        if (!confirm('Удалить правило?')) return;
+        const res = await apiCall('DELETE', `/companies/${companyId}/auto-rules/${id}`);
+        if (res.success) { setToast({type:'success',message:'Удалено'}); load(); }
+        else setToast({type:'error',message:res.error});
+      };
+
+      const handleToggle = async (rule) => {
+        const res = await apiCall('PATCH', `/companies/${companyId}/auto-rules/${rule.id}`, { is_active: !rule.is_active });
+        if (res.success) load();
+      };
+
+      const handleApplyAll = async () => {
+        if (!confirm('Применить все активные правила к транзакциям без категории?')) return;
+        setApplying(true);
+        const res = await apiCall('POST', `/companies/${companyId}/auto-rules/apply-all?only_uncategorized=true`);
+        setApplying(false);
+        if (res.success) {
+          setApplyResult(res.data);
+          setToast({type:'success', message:`Обновлено ${res.data.updated} транзакций`});
+        } else setToast({type:'error', message:res.error});
+      };
+
+      const handlePreview = async () => {
+        if (!form.pattern) return;
+        const payload = { ...form, priority: parseInt(form.priority)||0, suggested_category_id: form.suggested_category_id||null };
+        const res = await apiCall('POST', `/companies/${companyId}/auto-rules/preview`, payload);
+        if (res.success) setPreviewMatches(res.data);
+      };
+
+      if (loading) return <LoadingSpinner />;
+
+      const fieldLabel  = (v) => FIELDS.find(f=>f.value===v)?.label || v;
+      const typeLabel   = (v) => TYPES.find(t=>t.value===v)?.label  || v;
+      const catName     = (id) => categories.find(c=>c.id===id)?.name || '—';
+
+      return (
+        <div style={{ padding:'24px' }}>
+          {toast && <Toast message={toast.message} type={toast.type} onClose={()=>setToast(null)} />}
+
+          {/* Шапка */}
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'20px', flexWrap:'wrap', gap:'12px' }}>
+            <div>
+              <div style={{ fontSize:'13px', color:COLORS.textSecondary }}>
+                Правила автоматически назначают категорию транзакциям по ключевым словам
+              </div>
+            </div>
+            <div style={{ display:'flex', gap:'10px' }}>
+              <Button variant="outline" onClick={handleApplyAll} disabled={applying}>
+                {applying ? '⏳ Применение...' : '▶ Применить ко всем'}
+              </Button>
+              <Button onClick={openCreate}>+ Новое правило</Button>
+            </div>
+          </div>
+
+          {/* Результат применения */}
+          {applyResult && (
+            <div style={{ background:'#f0fdf4', border:'1px solid #bbf7d0', borderRadius:'12px', padding:'16px 20px', marginBottom:'20px' }}>
+              <div style={{ fontWeight:700, color:COLORS.green, marginBottom:'8px' }}>
+                ✅ Обновлено {applyResult.updated} из {applyResult.total_checked} транзакций
+              </div>
+              {applyResult.details?.slice(0,5).map((d,i) => (
+                <div key={i} style={{ fontSize:'13px', color:COLORS.textSecondary, marginBottom:'3px' }}>
+                  • {d.description} → {d.rule_name}
+                </div>
+              ))}
+              {applyResult.details?.length > 5 && <div style={{ fontSize:'12px', color:COLORS.textSecondary }}>…ещё {applyResult.details.length-5}</div>}
+            </div>
+          )}
+
+          {/* Список правил */}
+          {rules.length === 0 ? (
+            <div style={{ background:COLORS.white, borderRadius:'16px', padding:'60px 32px', textAlign:'center', boxShadow:'0 1px 4px rgba(0,0,0,0.07)' }}>
+              <div style={{ fontSize:'40px', marginBottom:'12px' }}>🤖</div>
+              <div style={{ fontSize:'16px', fontWeight:600, marginBottom:'8px' }}>Правил пока нет</div>
+              <div style={{ color:COLORS.textSecondary, fontSize:'14px', marginBottom:'20px' }}>
+                Создайте правило, например:<br/>
+                если описание содержит «аренда» → категория «Аренда офиса»
+              </div>
+              <Button onClick={openCreate}>Создать первое правило</Button>
+            </div>
+          ) : (
+            <div style={{ background:COLORS.white, borderRadius:'14px', overflow:'hidden', boxShadow:'0 1px 4px rgba(0,0,0,0.07)' }}>
+              <div style={{ padding:'12px 20px', background:COLORS.grayLight, borderBottom:`1px solid ${COLORS.border}`,
+                display:'grid', gridTemplateColumns:'2fr 1.5fr 1.5fr 1.5fr 80px 80px', gap:'8px',
+                fontSize:'12px', fontWeight:700, color:COLORS.textSecondary, textTransform:'uppercase' }}>
+                <span>Название / паттерн</span><span>Поле</span><span>Тип</span><span>Категория</span><span>Приоритет</span><span>Действия</span>
+              </div>
+              {rules.map(r => (
+                <div key={r.id} style={{ padding:'14px 20px', borderBottom:`1px solid ${COLORS.border}`,
+                  display:'grid', gridTemplateColumns:'2fr 1.5fr 1.5fr 1.5fr 80px 80px', gap:'8px', alignItems:'center',
+                  opacity: r.is_active ? 1 : 0.5 }}>
+                  <div>
+                    <div style={{ fontWeight:600, fontSize:'14px', marginBottom:'3px' }}>{r.name}</div>
+                    <code style={{ fontSize:'12px', background:'#f1f5f9', padding:'2px 7px', borderRadius:'4px', color:COLORS.accent }}>{r.pattern}</code>
+                  </div>
+                  <div style={{ fontSize:'13px', color:COLORS.textSecondary }}>{fieldLabel(r.field_to_match)}</div>
+                  <div style={{ fontSize:'13px', color:COLORS.textSecondary }}>{typeLabel(r.match_type)}</div>
+                  <div style={{ fontSize:'13px', fontWeight:500 }}>{r.category_name || '—'}</div>
+                  <div style={{ fontSize:'13px', textAlign:'center', color:COLORS.textSecondary }}>{r.priority}</div>
+                  <div style={{ display:'flex', gap:'6px', alignItems:'center' }}>
+                    {/* Toggle */}
+                    <div onClick={()=>handleToggle(r)} title={r.is_active?'Деактивировать':'Активировать'}
+                      style={{ width:'36px', height:'20px', borderRadius:'10px', background:r.is_active?COLORS.accent:'#cbd5e1',
+                        position:'relative', cursor:'pointer', transition:'background 0.2s', flexShrink:0 }}>
+                      <div style={{ position:'absolute', top:'3px', left:r.is_active?'19px':'3px', width:'14px', height:'14px',
+                        borderRadius:'50%', background:'#fff', transition:'left 0.2s' }} />
+                    </div>
+                    <button onClick={()=>openEdit(r)} style={{ background:'none',border:'none',cursor:'pointer',fontSize:'15px',color:COLORS.accent }}>✎</button>
+                    <button onClick={()=>handleDelete(r.id)} style={{ background:'none',border:'none',cursor:'pointer',fontSize:'15px',color:COLORS.red }}>🗑</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Модал создания/редактирования */}
+          {showModal && (
+            <div style={{ position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000 }}
+              onClick={e=>{if(e.target===e.currentTarget)setShowModal(false)}}>
+              <div style={{ background:COLORS.white,borderRadius:'16px',padding:'28px',width:'520px',maxHeight:'90vh',overflowY:'auto',boxShadow:'0 20px 60px rgba(0,0,0,0.3)' }}>
+                <h3 style={{ fontSize:'18px',fontWeight:700,marginBottom:'20px' }}>{editingRule?'Редактировать правило':'Новое правило'}</h3>
+
+                <div style={{ marginBottom:'14px' }}>
+                  <label style={{ display:'block',marginBottom:'6px',fontWeight:500,fontSize:'14px' }}>Название *</label>
+                  <input value={form.name} onChange={e=>setForm({...form,name:e.target.value})} placeholder="Например: Аренда офиса"
+                    style={{ width:'100%',padding:'10px 14px',border:`1.5px solid ${COLORS.border}`,borderRadius:'8px',fontSize:'14px',fontFamily:'Inter,sans-serif',boxSizing:'border-box' }} />
+                </div>
+
+                <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginBottom:'14px' }}>
+                  <div>
+                    <label style={{ display:'block',marginBottom:'6px',fontWeight:500,fontSize:'14px' }}>Поле *</label>
+                    <select value={form.field_to_match} onChange={e=>setForm({...form,field_to_match:e.target.value})}
+                      style={{ width:'100%',padding:'10px 14px',border:`1.5px solid ${COLORS.border}`,borderRadius:'8px',fontSize:'14px',fontFamily:'Inter,sans-serif' }}>
+                      {FIELDS.map(f=><option key={f.value} value={f.value}>{f.label}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label style={{ display:'block',marginBottom:'6px',fontWeight:500,fontSize:'14px' }}>Условие *</label>
+                    <select value={form.match_type} onChange={e=>setForm({...form,match_type:e.target.value})}
+                      style={{ width:'100%',padding:'10px 14px',border:`1.5px solid ${COLORS.border}`,borderRadius:'8px',fontSize:'14px',fontFamily:'Inter,sans-serif' }}>
+                      {TYPES.map(t=><option key={t.value} value={t.value}>{t.label}</option>)}
+                    </select>
+                  </div>
+                </div>
+
+                <div style={{ marginBottom:'14px' }}>
+                  <label style={{ display:'block',marginBottom:'6px',fontWeight:500,fontSize:'14px' }}>Паттерн * <span style={{ fontWeight:400,color:COLORS.textSecondary }}>(ключевое слово или regex)</span></label>
+                  <div style={{ display:'flex',gap:'8px' }}>
+                    <input value={form.pattern} onChange={e=>setForm({...form,pattern:e.target.value})} placeholder="аренда"
+                      style={{ flex:1,padding:'10px 14px',border:`1.5px solid ${COLORS.border}`,borderRadius:'8px',fontSize:'14px',fontFamily:'Inter,sans-serif' }} />
+                    <button onClick={handlePreview} style={{ padding:'10px 16px',background:COLORS.grayLight,border:`1px solid ${COLORS.border}`,borderRadius:'8px',cursor:'pointer',fontSize:'13px',fontWeight:600,whiteSpace:'nowrap' }}>
+                      👁 Предпросмотр
+                    </button>
+                  </div>
+                  {previewMatches && (
+                    <div style={{ marginTop:'8px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:'8px',padding:'10px 14px' }}>
+                      <div style={{ fontSize:'13px',fontWeight:600,color:COLORS.accent,marginBottom:'6px' }}>
+                        Совпадёт с {previewMatches.matched_count} транзакциями:
+                      </div>
+                      {previewMatches.matches.slice(0,5).map((m,i)=>(
+                        <div key={i} style={{ fontSize:'12px',color:COLORS.textSecondary,marginBottom:'3px' }}>• {m.description} ({formatCurrency(m.amount)})</div>
+                      ))}
+                      {previewMatches.matched_count>5 && <div style={{ fontSize:'12px',color:COLORS.textSecondary }}>…ещё {previewMatches.matched_count-5}</div>}
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ marginBottom:'14px' }}>
+                  <label style={{ display:'block',marginBottom:'6px',fontWeight:500,fontSize:'14px' }}>Назначить категорию</label>
+                  <select value={form.suggested_category_id} onChange={e=>setForm({...form,suggested_category_id:e.target.value})}
+                    style={{ width:'100%',padding:'10px 14px',border:`1.5px solid ${COLORS.border}`,borderRadius:'8px',fontSize:'14px',fontFamily:'Inter,sans-serif' }}>
+                    <option value="">— Без категории —</option>
+                    {categories.map(c=><option key={c.id} value={c.id}>[{c.category_type==='income'?'Доход':'Расход'}] {c.name}</option>)}
+                  </select>
+                </div>
+
+                <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginBottom:'20px' }}>
+                  <div>
+                    <label style={{ display:'block',marginBottom:'6px',fontWeight:500,fontSize:'14px' }}>Приоритет <span style={{ fontWeight:400,color:COLORS.textSecondary }}>(больше = раньше)</span></label>
+                    <input type="number" value={form.priority} onChange={e=>setForm({...form,priority:e.target.value})}
+                      style={{ width:'100%',padding:'10px 14px',border:`1.5px solid ${COLORS.border}`,borderRadius:'8px',fontSize:'14px',fontFamily:'Inter,sans-serif',boxSizing:'border-box' }} />
+                  </div>
+                  <div style={{ display:'flex',alignItems:'flex-end',paddingBottom:'2px' }}>
+                    <label style={{ display:'flex',alignItems:'center',gap:'10px',cursor:'pointer' }}>
+                      <div onClick={()=>setForm({...form,is_active:!form.is_active})}
+                        style={{ width:'44px',height:'24px',borderRadius:'12px',background:form.is_active?COLORS.accent:'#cbd5e1',position:'relative',cursor:'pointer',transition:'background 0.2s' }}>
+                        <div style={{ position:'absolute',top:'4px',left:form.is_active?'23px':'4px',width:'16px',height:'16px',borderRadius:'50%',background:'#fff',transition:'left 0.2s' }} />
+                      </div>
+                      <span style={{ fontWeight:500,fontSize:'14px' }}>Активно</span>
+                    </label>
+                  </div>
+                </div>
+
+                <div style={{ display:'flex',gap:'10px' }}>
+                  <button onClick={()=>setShowModal(false)} style={{ flex:1,padding:'11px',background:COLORS.grayLight,border:'none',borderRadius:'8px',cursor:'pointer',fontWeight:600 }}>Отмена</button>
+                  <button onClick={handleSave} style={{ flex:2,padding:'11px',background:COLORS.accent,color:'#fff',border:'none',borderRadius:'8px',cursor:'pointer',fontWeight:700,fontSize:'14px' }}>
+                    {editingRule ? 'Сохранить' : 'Создать правило'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       );
     };
@@ -6282,6 +6554,7 @@
         analytics: <AnalyticsPage />,
         'ai-parser': <AIParserPage />,
         alerts: <AlertsPage />,
+        'auto-rules': <AutoRulesPage />,
         debts: <DebtsPage />,
         counterparties: <Counterparties />,
         projects: <Projects />,
