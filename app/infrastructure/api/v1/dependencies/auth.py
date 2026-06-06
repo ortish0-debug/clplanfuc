@@ -204,3 +204,6 @@ CanManageBilling = require_role(UserRole.OWNER)
 
 # Псевдонимы для обратной совместимости с роутерами Спринтов 2-4
 CanManageCompany = require_role(UserRole.OWNER, UserRole.ADMIN)
+
+# Изменение настроек компании (налоговый режим и т.д.)
+CanSettings = require_role(UserRole.OWNER, UserRole.ADMIN)

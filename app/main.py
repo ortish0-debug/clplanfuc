@@ -252,10 +252,13 @@ async def rate_limit_middleware(request: Request, call_next):
     """
     client_ip = request.client.host if request.client else "unknown"
 
-    if "/auth/" in request.url.path:
-        limit, window = 100, 60
+    # Строгие лимиты для auth-эндпоинтов — защита от брутфорса
+    if "/auth/token" in request.url.path or "/auth/register" in request.url.path:
+        limit, window = 10, 60   # 10 попыток/мин — брутфорс невозможен
+    elif "/auth/" in request.url.path:
+        limit, window = 30, 60   # прочие auth (инвайты и т.д.)
     else:
-        limit, window = 1000, 60
+        limit, window = 300, 60  # обычные API
 
     if _rate_limiter.is_rate_limited(client_ip, limit, window):
         return JSONResponse(
@@ -263,7 +266,23 @@ async def rate_limit_middleware(request: Request, call_next):
             content={"detail": "Rate limit exceeded. Try again later."},
         )
 
-    return await call_next(request)
+    response = await call_next(request)
+    return response
+
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    """Добавляет заголовки безопасности ко всем ответам."""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    # HSTS — только если запрос пришёл по HTTPS
+    if request.url.scheme == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
 
 
 # ---------------------------------------------------------------------------

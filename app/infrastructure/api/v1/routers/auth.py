@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 import bcrypt
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,7 +35,7 @@ from app.domain.models.saas import (
 )
 from app.domain.schemas.auth import RegisterRequest, RegisterResponse, TokenResponse
 from app.infrastructure.database.session import get_db
-from app.services.jwt_service import encode_token, TOKEN_EXPIRE_MINUTES
+from app.services.jwt_service import encode_token, TOKEN_EXPIRE_MINUTES, revoke_token
 
 router = APIRouter(
     prefix="/auth",
@@ -487,3 +488,24 @@ async def get_me(
         "role":       current_user.role.value,
     }
 
+
+
+@router.post(
+    "/logout",
+    summary="Выход из системы",
+    description="Отзывает текущий токен — после этого он не будет принят даже если не истёк.",
+)
+async def logout(
+    current_user: CurrentUser = Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer(auto_error=False)),
+) -> dict:
+    """Инвалидирует JWT-токен пользователя (добавляет в blacklist)."""
+    from app.services.jwt_service import decode_token
+    try:
+        if credentials:
+            payload = decode_token(credentials.credentials)
+            if payload.jti:
+                revoke_token(payload.jti, payload.exp)
+    except Exception:
+        pass
+    return {"message": "Выход выполнен успешно."}
