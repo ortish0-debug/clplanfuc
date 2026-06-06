@@ -19,14 +19,21 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 import dotenv
-import sentry_sdk
+try:
+    import sentry_sdk
+    from sentry_sdk.integrations.fastapi import FastApiIntegration
+    _sentry_available = True
+except ImportError:
+    sentry_sdk = None
+    FastApiIntegration = None
+    _sentry_available = False
+
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 from sqlalchemy import text
-from sentry_sdk.integrations.fastapi import FastApiIntegration
 
 from app.infrastructure.api.v1.routers import (
     accruals, ai_parser, alerts_advanced, advanced_analytics, analytics, assets, auth, auto_rules, balance_sheet, bank_auth, billing, budgets, bulk, compliance, counterparties, crm, crm_deals, crud_operations, export, search, templates,
@@ -59,7 +66,7 @@ dotenv.load_dotenv()
 # ---------------------------------------------------------------------------
 
 _sentry_dsn = os.environ.get("SENTRY_DSN", "").strip()
-if _sentry_dsn:
+if _sentry_dsn and _sentry_available:
     sentry_sdk.init(
         dsn=_sentry_dsn,
         integrations=[FastApiIntegration()],
