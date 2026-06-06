@@ -648,6 +648,7 @@
       const [password2, setPassword2] = useState('');
       const [fullName, setFullName]   = useState('');
       const [companyName, setCompanyName] = useState('');
+      const [regTaxRegime, setRegTaxRegime] = useState('usn_income');
       const [error, setError]         = useState('');
       const [loading, setLoading]     = useState(false);
 
@@ -710,7 +711,7 @@
           const res = await fetch('/api/v1/auth/register', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email, password, full_name: fullName, company_name: companyName || fullName + "'s Company" }),
+            body: JSON.stringify({ email, password, full_name: fullName, company_name: companyName || fullName + "'s Company", tax_regime: regTaxRegime }),
           });
           const data = await res.json();
           if (!res.ok) { setError(data.detail || 'Ошибка регистрации'); return; }
@@ -848,6 +849,32 @@
               {mode === 'register' && (
                 <Field label="Название компании" value={companyName} onChange={e=>setCompanyName(e.target.value)}
                   placeholder="ООО Моя Компания" />
+              )}
+
+              {/* Налоговый режим — только при регистрации */}
+              {mode === 'register' && (
+                <div>
+                  <label style={{ display:'block', marginBottom:'8px', fontWeight:500, fontSize:'14px', color:COLORS.text }}>
+                    Налоговый режим
+                  </label>
+                  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px' }}>
+                    {TAX_REGIMES.map(r => (
+                      <div key={r.code} onClick={() => setRegTaxRegime(r.code)}
+                        style={{ padding:'10px 12px', borderRadius:'9px', cursor:'pointer',
+                          border:`2px solid ${regTaxRegime===r.code ? COLORS.accent : COLORS.border}`,
+                          background: regTaxRegime===r.code ? COLORS.blueLight : '#fff',
+                          transition:'all 0.15s' }}>
+                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                          <span style={{ fontWeight:700, fontSize:'12px', color: regTaxRegime===r.code ? COLORS.accent : COLORS.text }}>
+                            {r.icon} {r.name}
+                          </span>
+                          <span style={{ fontSize:'11px', fontWeight:700, color: regTaxRegime===r.code ? COLORS.accent : COLORS.textSecondary }}>{r.rate}</span>
+                        </div>
+                        <div style={{ fontSize:'11px', color:COLORS.textSecondary, marginTop:'3px', lineHeight:'1.4' }}>{r.desc}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               )}
 
               <Field label="Пароль *" type="password" value={password} onChange={e=>setPassword(e.target.value)}
@@ -4306,13 +4333,24 @@
       );
     };
 
+    const TAX_REGIMES = [
+      { code: 'osn',        name: 'ОСНО',                      desc: 'Общая система — НДС 20% + налог на прибыль 20%',       rate: '20%',  icon: '🏛️' },
+      { code: 'usn_income', name: 'УСН «Доходы»',              desc: 'Упрощённая система — налог только с доходов',           rate: '6%',   icon: '📈' },
+      { code: 'usn_profit', name: 'УСН «Доходы − Расходы»',   desc: 'Упрощённая система — налог с прибыли (мин. 1%)',        rate: '15%',  icon: '📊' },
+      { code: 'patent',     name: 'ПСН (Патент)',              desc: 'Фиксированный налог для ИП, устанавливается регионом',  rate: '6%*',  icon: '📜' },
+      { code: 'eshn',       name: 'ЕСХН',                      desc: 'Единый сельхозналог — только для агробизнеса',          rate: '6%',   icon: '🌾' },
+      { code: 'npd',        name: 'НПД (Самозанятый)',          desc: 'Налог на профдоход — 4% от физлиц, 6% от юрлиц',       rate: '4–6%', icon: '👤' },
+    ];
+
     const Settings = () => {
-      const { companyId, user } = useAuth();
+      const { companyId, user, canSettings } = useAuth();
       const [company, setCompany] = useState(null);
       const [loading, setLoading] = useState(true);
       const [toast, setToast] = useState(null);
       const [tab, setTab] = useState('profile');
       const [formData, setFormData] = useState({ name: '', inn: '' });
+      const [taxRegime, setTaxRegime] = useState(null);
+      const [taxSaving, setTaxSaving] = useState(false);
       const [accounts, setAccounts] = useState([]);
       const [categories, setCategories] = useState([]);
       const [showAccountModal, setShowAccountModal] = useState(false);
@@ -4323,11 +4361,15 @@
       useEffect(() => {
         const fetchCompany = async () => {
           setLoading(true);
-          const res = await apiCall('GET', `/companies/${companyId}`);
-          if (res.success) {
-            setCompany(res.data);
-            setFormData({ name: res.data.name || '', inn: res.data.inn || '' });
+          const [compRes, taxRes] = await Promise.all([
+            apiCall('GET', `/companies/${companyId}`),
+            apiCall('GET', `/companies/${companyId}/tax-regime`),
+          ]);
+          if (compRes.success) {
+            setCompany(compRes.data);
+            setFormData({ name: compRes.data.name || '', inn: compRes.data.inn || '' });
           }
+          if (taxRes.success) setTaxRegime(taxRes.data.tax_regime || 'usn_income');
           setLoading(false);
         };
         fetchCompany();
@@ -4337,6 +4379,17 @@
         if (tab === 'accounts') fetchAccounts();
         if (tab === 'categories') fetchCategories();
       }, [tab]);
+
+      const handleSaveTaxRegime = async () => {
+        setTaxSaving(true);
+        const res = await apiCall('PATCH', `/companies/${companyId}/tax-regime`, { tax_regime: taxRegime });
+        setTaxSaving(false);
+        if (res.success) {
+          setToast({ type: 'success', message: `Налоговый режим изменён на «${TAX_REGIMES.find(r=>r.code===taxRegime)?.name}»` });
+        } else {
+          setToast({ type: 'error', message: res.error });
+        }
+      };
 
       const handleSave = async () => {
         const res = await apiCall('PATCH', `/companies/${companyId}`, formData);
@@ -4427,13 +4480,14 @@
         <div style={{ padding: '32px', maxWidth: '800px' }}>
           <h2 style={{ fontSize: '24px', fontWeight: 600, marginBottom: '24px' }}>Настройки</h2>
 
-          <div style={{ display: 'flex', gap: '12px', marginBottom: '32px' }}>
-            {['profile', 'company', 'accounts', 'categories'].map((t) => (
+          <div style={{ display: 'flex', gap: '12px', marginBottom: '32px', flexWrap: 'wrap' }}>
+            {['profile', 'company', 'tax', 'accounts', 'categories'].map((t) => (
               <button key={t} onClick={() => setTab(t)} style={{ padding: '8px 16px', border: 'none', borderRadius: '8px', background: tab === t ? COLORS.accent : COLORS.grayLight, color: tab === t ? COLORS.white : COLORS.text, fontWeight: 500, cursor: 'pointer', transition: 'all 0.2s' }}>
-                {t === 'profile' && '👤 Профиль'}
-                {t === 'company' && '🏢 Компания'}
-                {t === 'accounts' && '💳 Счета'}
-                {t === 'categories' && '📊 Статьи'}
+                {t === 'profile'     && '👤 Профиль'}
+                {t === 'company'     && '🏢 Компания'}
+                {t === 'tax'         && '🧾 Налоги'}
+                {t === 'accounts'    && '💳 Счета'}
+                {t === 'categories'  && '📊 Статьи'}
               </button>
             ))}
           </div>
@@ -4462,6 +4516,51 @@
                 </div>
                 {canSettings() && <Button onClick={handleSave} style={{ alignSelf: 'flex-start' }}>Сохранить изменения</Button>}
               </div>
+            </div>
+          )}
+
+          {tab === 'tax' && (
+            <div style={{ background: COLORS.white, borderRadius: '12px', padding: '24px', border: `1px solid ${COLORS.border}` }}>
+              <h3 style={{ fontSize: '16px', fontWeight: 600, marginBottom: '6px' }}>Налоговый режим</h3>
+              <p style={{ fontSize: '13px', color: COLORS.textSecondary, marginBottom: '24px' }}>
+                Выберите систему налогообложения вашей компании. Это влияет на расчёт налогов в отчётах.
+              </p>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '24px' }}>
+                {TAX_REGIMES.map(regime => {
+                  const isSelected = taxRegime === regime.code;
+                  return (
+                    <div key={regime.code} onClick={() => canSettings() && setTaxRegime(regime.code)}
+                      style={{
+                        padding: '16px', borderRadius: '12px', cursor: canSettings() ? 'pointer' : 'default',
+                        border: `2px solid ${isSelected ? COLORS.accent : COLORS.border}`,
+                        background: isSelected ? COLORS.blueLight : COLORS.white,
+                        transition: 'all 0.15s',
+                      }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '6px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ fontSize: '20px' }}>{regime.icon}</span>
+                          <span style={{ fontWeight: 700, fontSize: '14px', color: isSelected ? COLORS.accent : COLORS.text }}>{regime.name}</span>
+                        </div>
+                        <span style={{
+                          fontSize: '12px', fontWeight: 700, padding: '2px 8px', borderRadius: '20px',
+                          background: isSelected ? COLORS.accent : COLORS.grayLight,
+                          color: isSelected ? '#fff' : COLORS.textSecondary,
+                        }}>{regime.rate}</span>
+                      </div>
+                      <p style={{ fontSize: '12px', color: COLORS.textSecondary, margin: 0, lineHeight: '1.5' }}>{regime.desc}</p>
+                      {isSelected && (
+                        <div style={{ marginTop: '8px', fontSize: '12px', color: COLORS.accent, fontWeight: 600 }}>✓ Выбрано</div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              {canSettings() && (
+                <button onClick={handleSaveTaxRegime} disabled={taxSaving}
+                  style={{ padding: '10px 24px', background: COLORS.accent, color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 600, fontSize: '14px', opacity: taxSaving ? 0.7 : 1 }}>
+                  {taxSaving ? 'Сохраняю...' : 'Сохранить налоговый режим'}
+                </button>
+              )}
             </div>
           )}
 
