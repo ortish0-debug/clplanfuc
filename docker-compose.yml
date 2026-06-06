@@ -1,0 +1,42 @@
+﻿version: "3.9"
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: planfact
+      POSTGRES_USER: planfact
+      POSTGRES_PASSWORD: planfact_secret
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U planfact"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://planfact:planfact_secret@db:5432/planfact
+      ENVIRONMENT: production
+    expose:
+      - "8000"
+
+  nginx:
+    image: nginx:latest
+    depends_on:
+      - web
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./static:/app/static:ro
+    command: nginx -g 'daemon off;'
+
+volumes:
+  postgres_data:
