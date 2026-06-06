@@ -39,6 +39,17 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
+class TaxRegime(str, enum.Enum):
+    """Налоговые режимы РФ."""
+    OSN        = "osn"         # ОСНО — Общая система налогообложения
+    USN_INCOME = "usn_income"  # УСН «Доходы» 6%
+    USN_PROFIT = "usn_profit"  # УСН «Доходы минус расходы» 15%
+    PATENT     = "patent"      # Патентная система (ПСН)
+    ENVD       = "envd"        # ЕНВД (устаревший, но встречается)
+    ESHN       = "eshn"        # ЕСХН — Единый сельхозналог
+    NPD        = "npd"         # НПД — Налог на профессиональный доход (самозанятые)
+
+
 class AccountType(str, enum.Enum):
     CHECKING = "checking"          # Расчётный счёт
     SAVINGS = "savings"            # Сберегательный счёт
@@ -121,6 +132,11 @@ class Company(Base, TimestampMixin, SoftDeleteMixin):
     )
     timezone: Mapped[str] = mapped_column(
         String(64), default="Europe/Moscow", nullable=False
+    )
+    tax_regime: Mapped[TaxRegime] = mapped_column(
+        Enum(TaxRegime, name="tax_regime_enum"),
+        default=TaxRegime.USN_INCOME,
+        nullable=False,
     )
     settings: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
 

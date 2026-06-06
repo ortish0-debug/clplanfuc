@@ -148,6 +148,7 @@ async def register(
 
     # ── Создаём компанию ────────────────────────────────────────────────────
     company_name = body.company_name or f"{body.full_name}'s Company"
+    from app.domain.models.finance import TaxRegime
     company = Company(
         id=uuid.uuid4(),
         name=company_name,
@@ -155,8 +156,8 @@ async def register(
         inn=None,  # Пользователь может заполнить позже
         currency=Currency.RUB,
         timezone="Europe/Moscow",
+        tax_regime=TaxRegime(body.tax_regime),
         settings={
-            "tax_regime": "usn_income",
             "business_model": "standard",
             "currency": "RUB",
         },
@@ -196,6 +197,7 @@ async def register(
         company_id=company.id,
         email=user.email,
         full_name=user.full_name,
+        tax_regime=company.tax_regime.value,
         message=f"Пользователь {user.email} и компания '{company_name}' успешно созданы.",
     )
 

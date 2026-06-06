@@ -38,7 +38,7 @@ from sqlalchemy import text
 from app.infrastructure.api.v1.routers import (
     accruals, ai_parser, alerts_advanced, advanced_analytics, analytics, assets, auth, auto_rules, balance_sheet, bank_auth, billing, budgets, bulk, compliance, counterparties, crm, crm_deals, crud_operations, export, search, templates,
     currency, directbank, disaster_recovery, documents, email_integration, fixed_assets, holdings, import_bank, integrations, integrations_advanced, inventory, ledger, loans,
-    ml_reconciliation, mobile, mobile_advanced, onec, payment_requests, payroll, payroll_advanced, planning, production, projects, reports, russian_taxes, saas, taxes, tax_reports, team, warehouse, websockets,
+    ml_reconciliation, mobile, mobile_advanced, onec, payment_requests, payroll, payroll_advanced, planning, production, projects, reports, russian_taxes, saas, taxes, tax_reports, tax_regime, team, warehouse, websockets,
 )
 from app.infrastructure.api.v1.routers import reports as reports_router
 from app.infrastructure.database.session import AsyncSessionFactory, _engine
@@ -638,6 +638,11 @@ app.include_router(
 
 app.include_router(
     tax_reports.router,
+    prefix=_API_PREFIX,
+)
+
+app.include_router(
+    tax_regime.router,
     prefix=_API_PREFIX,
 )
 
