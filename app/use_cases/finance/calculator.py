@@ -49,9 +49,14 @@ class BusinessModel(str, enum.Enum):
 
 
 class TaxRegime(str, enum.Enum):
-    USN_INCOME = "usn_income"           # УСН «Доходы» 6%
-    USN_INCOME_MINUS_EXPENSES = "usn_income_minus_expenses"  # УСН «Д−Р» 15%
-    OSNO = "osno"                       # Общая система налогообложения
+    USN_INCOME = "usn_income"                           # УСН «Доходы» 6%
+    USN_INCOME_MINUS_EXPENSES = "usn_income_minus_expenses"  # алиас (устаревший)
+    USN_PROFIT = "usn_profit"                           # УСН «Доходы − Расходы» 15%
+    OSNO = "osno"                                       # Общая система налогообложения
+    OSN  = "osn"                                        # алиас ОСНО
+    PATENT = "patent"                                   # Патент
+    ESHN = "eshn"                                       # ЕСХН
+    NPD  = "npd"                                        # НПД (самозанятый)
 
 
 # ---------------------------------------------------------------------------
@@ -234,27 +239,40 @@ class TaxCalculator:
         vat_amount > 0 только для ОСНО.
         """
         if self.regime == TaxRegime.USN_INCOME:
-            # Налог 6% от выручки; взносы за сотрудников снижают налог до 50%
+            # УСН «Доходы» 6% от выручки; взносы снижают налог до 50%
             tax_before_deduction = _round(revenue * USN_INCOME_RATE)
             max_deduction = _round(tax_before_deduction * Decimal("0.50"))
             actual_deduction = min(payroll_total * INSURANCE_RATE, max_deduction)
             return _round(max(ZERO, tax_before_deduction - actual_deduction)), ZERO
 
-        if self.regime == TaxRegime.USN_INCOME_MINUS_EXPENSES:
-            # Налог 15% от (доходы − расходы); минимальный налог 1% от выручки
+        if self.regime in (TaxRegime.USN_INCOME_MINUS_EXPENSES, TaxRegime.USN_PROFIT):
+            # УСН «Доходы − Расходы» 15%; минимальный налог 1% от выручки
             taxable = revenue - expenses - payroll_total
             standard_tax = _round(max(ZERO, taxable) * USN_PROFIT_RATE)
             minimum_tax = _round(revenue * Decimal("0.01"))
             return max(standard_tax, minimum_tax), ZERO
 
-        if self.regime == TaxRegime.OSNO:
-            # НДС 20% начисляется на выручку (упрощённо — без вычетов)
+        if self.regime in (TaxRegime.OSNO, TaxRegime.OSN):
+            # НДС 20% начисляется на выручку (упрощённо — без вычетов входящего НДС)
             vat = _round(revenue * VAT_RATE / (Decimal("1") + VAT_RATE))
             # Налог на прибыль 20% от (выручка без НДС − расходы − ФОТ)
             revenue_net = revenue - vat
             profit_taxable = max(ZERO, revenue_net - expenses - payroll_total)
             income_tax = _round(profit_taxable * INCOME_TAX_OSNO)
             return income_tax, vat
+
+        if self.regime == TaxRegime.ESHN:
+            # ЕСХН 6% от (доходы − расходы)
+            taxable = max(ZERO, revenue - expenses - payroll_total)
+            return _round(taxable * Decimal("0.06")), ZERO
+
+        if self.regime == TaxRegime.NPD:
+            # НПД 6% от всей выручки (упрощённо — от юрлиц)
+            return _round(revenue * Decimal("0.06")), ZERO
+
+        if self.regime == TaxRegime.PATENT:
+            # Патент — фиксированный налог, не зависит от оборота
+            return ZERO, ZERO
 
         return ZERO, ZERO
 
@@ -663,7 +681,18 @@ async def calculate_financials(
     if company_settings is None:
         company_settings = {}
 
-    tax_regime = _get_tax_regime(company_settings)
+    # Читаем tax_regime из новой колонки company (приоритет), fallback — старый settings JSON
+    from app.domain.models.finance import Company as CompanyModel
+    _company_row = await db.execute(select(CompanyModel).where(CompanyModel.id == company_id))
+    _company_obj = _company_row.scalar_one_or_none()
+    if _company_obj and _company_obj.tax_regime:
+        try:
+            tax_regime = TaxRegime(_company_obj.tax_regime.value)
+        except ValueError:
+            tax_regime = _get_tax_regime(company_settings)
+    else:
+        tax_regime = _get_tax_regime(company_settings)
+
     business_model = _get_business_model(company_settings)
     currency = company_settings.get("currency", "RUB")
 
