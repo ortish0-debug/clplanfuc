@@ -36,8 +36,11 @@ router = APIRouter(tags=["CRUD Operations"])
 
 class AccountCreate(BaseModel):
     name: str
-    account_type: str  # CHECKING, SAVINGS, CASH, CREDIT, INVESTMENT
-    currency: str = "RUB"  # Default to RUB
+    account_type: str  # CHECKING, SAVINGS, CASH, CREDIT, INVESTMENT, BANK
+    currency: str = "RUB"          # Default to RUB
+    currency_code: Optional[str] = None  # alias из фронтенда
+    balance: Optional[float] = None      # начальный баланс из фронтенда
+    initial_balance: Optional[float] = None
 
 
 class AccountResponse(BaseModel):
@@ -69,8 +72,9 @@ class TransactionCreate(BaseModel):
     category_id: Optional[UUID] = None
     amount: float
     transaction_type: str  # INCOME, EXPENSE, TRANSFER
-    description: str
-    payment_date: str  # YYYY-MM-DD
+    description: Optional[str] = ""
+    payment_date: Optional[str] = None   # YYYY-MM-DD; если нет — сегодня
+    counterparty_id: Optional[UUID] = None  # опционально из фронтенда
 
 
 class TransactionUpdate(BaseModel):
@@ -144,22 +148,32 @@ async def create_account(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Создать новый счет."""
+    # Поддержка currency_code как алиас currency (из фронтенда)
+    currency_str = (body.currency_code or body.currency or "RUB").upper()
+    # Нормализация account_type: BANK → CHECKING
+    account_type_str = body.account_type.upper()
+    if account_type_str == "BANK":
+        account_type_str = "CHECKING"
+
     try:
-        account_type = AccountType[body.account_type.upper()]
-        currency = Currency[body.currency.upper()]
+        account_type = AccountType[account_type_str]
+        currency = Currency[currency_str]
     except KeyError:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Неверный тип счета или валюта",
         )
 
+    # Начальный баланс: принимаем balance или initial_balance
+    start_balance = Decimal(str(body.balance or body.initial_balance or 0))
+
     account = Account(
         company_id=company_id,
         name=body.name,
         account_type=account_type,
         currency=currency,
-        initial_balance=Decimal("0.00"),
-        current_balance=Decimal("0.00"),
+        initial_balance=start_balance,
+        current_balance=start_balance,
         is_active=True,
     )
     db.add(account)
@@ -364,7 +378,11 @@ async def create_transaction(
 
     # Create transaction
     amount = Decimal(str(body.amount))
-    payment_date = date.fromisoformat(body.payment_date) if isinstance(body.payment_date, str) else body.payment_date
+    from datetime import date as _date
+    if body.payment_date:
+        payment_date = _date.fromisoformat(body.payment_date[:10])
+    else:
+        payment_date = _date.today()
 
     transaction = Transaction(
         company_id=company_id,
