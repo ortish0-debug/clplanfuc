@@ -251,16 +251,27 @@ async def rate_limit_middleware(request: Request, call_next):
     - /auth/: 10 req/min на IP (защита от перебора паролей)
     """
     client_ip = request.client.host if request.client else "unknown"
+    path = request.url.path
 
-    # Строгие лимиты для auth-эндпоинтов — защита от брутфорса
-    if "/auth/token" in request.url.path or "/auth/register" in request.url.path:
-        limit, window = 10, 60   # 10 попыток/мин — брутфорс невозможен
-    elif "/auth/" in request.url.path:
-        limit, window = 30, 60   # прочие auth (инвайты и т.д.)
+    # Каждый endpoint-bucket считается отдельно, чтобы один инструмент
+    # не «съедал» лимит другого (например, /accept-invite ≠ /token)
+    if "/auth/token" in path:
+        limit, window, bucket = 10, 60, "login"       # брутфорс пароля
+    elif "/auth/register" in path:
+        limit, window, bucket = 10, 60, "register"    # массовая регистрация
+    elif "/auth/logout" in path:
+        limit, window, bucket = 60, 60, "logout"      # logout — не атака
+    elif "/auth/accept-invite" in path:
+        limit, window, bucket = 60, 60, "accept"      # регистрация через инвайт
+    elif "/auth/invite-info" in path:
+        limit, window, bucket = 60, 60, "inviteinfo"
+    elif "/auth/" in path:
+        limit, window, bucket = 30, 60, "auth_other"
     else:
-        limit, window = 300, 60  # обычные API
+        limit, window, bucket = 300, 60, "api"
 
-    if _rate_limiter.is_rate_limited(client_ip, limit, window):
+    rl_key = f"{client_ip}:{bucket}"
+    if _rate_limiter.is_rate_limited(rl_key, limit, window):
         return JSONResponse(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             content={"detail": "Rate limit exceeded. Try again later."},

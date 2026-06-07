@@ -77,9 +77,24 @@ class CounterpartyCreate(BaseModel):
     kpp:           Optional[str]  = Field(None, max_length=9)
     is_customer:   bool           = False
     is_supplier:   bool           = False
+    # Алиас из фронтенда: counterparty_type="customer"|"supplier"|"both"
+    counterparty_type: Optional[str] = Field(None, alias="type", description="customer | supplier | both")
     contact_email: Optional[str]  = None
     contact_phone: Optional[str]  = None
     notes:         Optional[str]  = None
+
+    model_config = {"populate_by_name": True}
+
+    def model_post_init(self, __context):
+        """Нормализуем поле counterparty_type/type в is_customer/is_supplier."""
+        t = (self.counterparty_type or "").lower()
+        if t in ("customer", "покупатель"):
+            object.__setattr__(self, "is_customer", True)
+        elif t in ("supplier", "поставщик", "vendor"):
+            object.__setattr__(self, "is_supplier", True)
+        elif t in ("both", "оба"):
+            object.__setattr__(self, "is_customer", True)
+            object.__setattr__(self, "is_supplier", True)
 
 
 class CounterpartyUpdate(BaseModel):

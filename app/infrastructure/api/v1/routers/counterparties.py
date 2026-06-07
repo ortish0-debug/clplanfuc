@@ -149,10 +149,12 @@ async def create_counterparty(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Контрагент должен быть покупателем (is_customer) или поставщиком (is_supplier).",
         )
+    # Исключаем alias-поля которых нет в ORM модели
+    cp_data = body.model_dump(exclude={"counterparty_type"})
     cp = Counterparty(
         id=uuid.uuid4(),
         company_id=company_id,
-        **body.model_dump(),
+        **cp_data,
         is_active=True,
         is_deleted=False,
     )

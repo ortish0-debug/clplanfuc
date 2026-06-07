@@ -6,7 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.infrastructure.api.v1.dependencies.auth import CanViewDashboard
+from app.infrastructure.api.v1.dependencies.auth import CanViewDashboard, CanViewBalance
 from app.infrastructure.database.session import get_db
 from app.services.report_service import generate_pl_report, generate_cash_flow_report, generate_balance_sheet, generate_financial_ratios
 
@@ -43,7 +43,7 @@ async def get_cashflow_report(
 @router.get("/balance", status_code=200)
 async def get_balance_sheet(
     company_id: UUID,
-    current_user=Depends(CanViewDashboard),
+    current_user=Depends(CanViewBalance),  # MANAGER не имеет доступа к балансу
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Get Balance Sheet report."""

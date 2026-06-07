@@ -8,12 +8,12 @@ class InMemoryRateLimiter:
     def __init__(self):
         self.requests: dict[str, list[float]] = {}
 
-    def is_rate_limited(self, client_ip: str, limit: int, window: int) -> bool:
+    def is_rate_limited(self, key: str, limit: int, window: int) -> bool:
         """
-        Проверить, не превышен ли лимит для клиента.
+        Проверить, не превышен ли лимит для ключа (ip:endpoint).
 
         Args:
-            client_ip: IP адрес клиента
+            key: Уникальный ключ (обычно ip:endpoint_group)
             limit: Максимум запросов
             window: Временное окно в секундах
 
@@ -23,13 +23,13 @@ class InMemoryRateLimiter:
         now = time.time()
         cutoff = now - window
 
-        if client_ip not in self.requests:
-            self.requests[client_ip] = []
+        if key not in self.requests:
+            self.requests[key] = []
 
-        self.requests[client_ip] = [ts for ts in self.requests[client_ip] if ts > cutoff]
+        self.requests[key] = [ts for ts in self.requests[key] if ts > cutoff]
 
-        if len(self.requests[client_ip]) >= limit:
+        if len(self.requests[key]) >= limit:
             return True
 
-        self.requests[client_ip].append(now)
+        self.requests[key].append(now)
         return False
