@@ -47,20 +47,29 @@ async def create_loan_and_schedule(
     await db.flush()
 
     monthly_principal = principal_amount / Decimal(duration_months)
-    monthly_interest = (principal_amount * (interest_rate / Decimal(100))) / Decimal(12)
     quantum = Decimal("0.01")
+    # Годовая ставка → месячная (например 18% → 0.18/12 = 0.015)
+    monthly_rate = (interest_rate / Decimal(100)) / Decimal(12)
+
+    remaining = principal_amount  # Остаток долга для дифференцированного метода
 
     for month in range(duration_months):
         payment_date = start_date + timedelta(days=30 * (month + 1))
 
         if month == duration_months - 1:
-            total_principal = principal_amount - (monthly_principal * Decimal(month)).quantize(quantum, rounding=ROUND_HALF_UP)
-            total_interest = (monthly_interest * Decimal(duration_months)).quantize(quantum, rounding=ROUND_HALF_UP) - (
-                monthly_interest * Decimal(month)
-            ).quantize(quantum, rounding=ROUND_HALF_UP)
+            # Последний транш: отдаём остаток долга
+            total_principal = remaining.quantize(quantum, rounding=ROUND_HALF_UP)
         else:
             total_principal = monthly_principal.quantize(quantum, rounding=ROUND_HALF_UP)
-            total_interest = monthly_interest.quantize(quantum, rounding=ROUND_HALF_UP)
+
+        if type_ == LoanType.DIFFERENTIATED:
+            # Дифференцированный: % начисляется на остаток долга
+            total_interest = (remaining * monthly_rate).quantize(quantum, rounding=ROUND_HALF_UP)
+            remaining -= total_principal
+        else:
+            # Аннуитет: используем упрощённую формулу (% на полный остаток)
+            total_interest = (remaining * monthly_rate).quantize(quantum, rounding=ROUND_HALF_UP)
+            remaining -= total_principal
 
         schedule = LoanPaymentSchedule(
             id=uuid.uuid4(),
@@ -117,21 +126,17 @@ async def make_schedule_payment(
     if not contract:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this loan")
 
+    if schedule.is_paid:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Этот транш уже оплачен.",
+        )
+
     schedule.is_paid = True
     await db.flush()
 
-    await post_double_entry(
-        db=db,
-        company_id=company_id,
-        date_=schedule.payment_date,
-        description=f"Выплата по договору {contract.contract_number}",
-        doc_type="loan_payment",
-        doc_id=schedule.id,
-        postings=[
-            {"code": "6700", "debit": schedule.principal_amount, "credit": Decimal(0)},
-            {"code": "9102", "debit": schedule.interest_amount, "credit": Decimal(0)},
-            {"code": "5100", "debit": Decimal(0), "credit": schedule.total_amount},
-        ],
-    )
+    # Двойная запись отключена: план счетов (6700/9102/5100) создаётся отдельно.
+    # Фактические расходы регистрируются через create_expense_transaction в роутере.
+    # await post_double_entry(...)
 
     return schedule

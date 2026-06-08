@@ -1,11 +1,12 @@
 """Planning and import API."""
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.models.finance import Account
 from app.domain.models.planning import PlannedTransaction
 from app.infrastructure.api.v1.dependencies.auth import CanViewDashboard, CanWriteFinance
 from app.infrastructure.database.session import get_db
@@ -54,10 +55,24 @@ async def import_csv_transactions(
     """Import transactions from CSV."""
     transactions = parse_csv_transactions(request.csv_content)
 
+    # Берём первый активный счёт компании для привязки плановых транзакций
+    acc_result = await db.execute(
+        select(Account).where(
+            Account.company_id == company_id,
+            Account.is_deleted.is_(False),
+        ).limit(1)
+    )
+    account = acc_result.scalar_one_or_none()
+    if not account:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Создайте хотя бы один счёт перед импортом плановых платежей.",
+        )
+
     for t in transactions:
         planned = PlannedTransaction(
             company_id=company_id,
-            account_id=current_user.company_id,
+            account_id=account.id,
             amount=t['amount'],
             transaction_type=t['transaction_type'],
             plan_date=t['plan_date'],

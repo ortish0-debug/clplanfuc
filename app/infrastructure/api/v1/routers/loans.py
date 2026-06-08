@@ -88,7 +88,10 @@ async def list_loans(
 ) -> list[LoanContractResponse]:
     """Получить список договоров компании."""
     result = await db.execute(
-        select(Loan).where(Loan.company_id == company_id).order_by(Loan.created_at.desc())
+        select(Loan).where(
+            Loan.company_id == company_id,
+            Loan.is_deleted.is_(False),
+        ).order_by(Loan.created_at.desc())
     )
     contracts = result.scalars().all()
     return [LoanContractResponse.model_validate(c) for c in contracts]
@@ -142,12 +145,12 @@ async def pay_schedule(
         select(Loan).where(Loan.id == schedule.loan_id)
     )
     contract = contract_result.scalar_one_or_none()
-    contract_num = contract.contract_number if contract else str(schedule.loan_id)[:8]
+    contract_num = contract.name if contract else str(schedule.loan_id)[:8]
 
     await create_expense_transaction(
         db=db,
         company_id=company_id,
-        amount=schedule.total_amount,
+        amount=schedule.total_payment,
         description=f"Платёж по займу {contract_num} (осн. {schedule.principal_amount} + % {schedule.interest_amount})",
         payment_date=schedule.payment_date,
         category_name="Выплаты по займам",
@@ -158,7 +161,7 @@ async def pay_schedule(
     await log_audit_action(
         db=db,
         company_id=company_id,
-        user_id=current_user.id,
+        user_id=current_user.user_id,
         action="loan.pay_installment",
         target_type="loan_payment_schedule",
         target_id=schedule_id,
