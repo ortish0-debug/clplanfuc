@@ -9,7 +9,7 @@ from sqlalchemy import func, select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.models.finance import (
-    Account, Category, Transaction,
+    Account, Category, Company, Transaction,
     TransactionType, TransactionStatus,
 )
 
@@ -98,7 +98,32 @@ async def generate_pl_report(
 
     gross_profit = revenue          # COGS = 0 (сервисный бизнес)
     ebitda       = revenue - opex
-    taxes        = max(ebitda * 0.20, 0)
+
+    # Читаем налоговый режим компании и считаем налог по его правилам
+    company_result = await db.execute(select(Company).where(Company.id == company_id))
+    company = company_result.scalar_one_or_none()
+    regime = company.tax_regime.value if company else "osn"
+
+    profit = max(ebitda, 0)
+    if regime == "usn_income":
+        # УСН Доходы 6%: налог с выручки
+        taxes = revenue * 0.06
+    elif regime == "usn_profit":
+        # УСН Доходы−Расходы 15%: 15% с прибыли, минимум 1% с выручки
+        taxes = max(profit * 0.15, revenue * 0.01)
+    elif regime == "npd":
+        # НПД 6% с выручки (юрлица/ИП, работающие с организациями)
+        taxes = revenue * 0.06
+    elif regime == "patent":
+        # Патент: фиксированный платёж (расчёт вне P&L), отражаем 0
+        taxes = 0.0
+    elif regime == "eshn":
+        # ЕСХН 6% с прибыли
+        taxes = profit * 0.06
+    else:
+        # ОСНО: налог на прибыль 20%
+        taxes = profit * 0.20
+
     net_income   = ebitda - taxes
 
     margin = round(net_income / revenue * 100, 1) if revenue > 0 else 0.0

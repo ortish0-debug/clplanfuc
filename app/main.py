@@ -256,9 +256,9 @@ async def rate_limit_middleware(request: Request, call_next):
     # Каждый endpoint-bucket считается отдельно, чтобы один инструмент
     # не «съедал» лимит другого (например, /accept-invite ≠ /token)
     if "/auth/token" in path:
-        limit, window, bucket = 10, 60, "login"       # брутфорс пароля
+        limit, window, bucket = 30, 60, "login"       # брутфорс пароля (30/мин на IP)
     elif "/auth/register" in path:
-        limit, window, bucket = 10, 60, "register"    # массовая регистрация
+        limit, window, bucket = 30, 60, "register"    # массовая регистрация
     elif "/auth/logout" in path:
         limit, window, bucket = 60, 60, "logout"      # logout — не атака
     elif "/auth/accept-invite" in path:

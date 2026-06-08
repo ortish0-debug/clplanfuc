@@ -193,6 +193,11 @@ async def register(
     db.add(subscription)
     await db.flush()
 
+    # Коммитим ДО отправки ответа: FastAPI отправляет HTTP-ответ раньше чем
+    # cleanup get_db делает commit, поэтому немедленный логин после регистрации
+    # видел бы пустую БД и получал 401.
+    await db.commit()
+
     return RegisterResponse(
         user_id=user.id,
         company_id=company.id,

@@ -546,6 +546,10 @@ async def accept_invite(
     inv.accepted_at = datetime.now(tz=timezone.utc)
     await db.flush()
 
+    # Коммитим до отправки ответа: FastAPI отправляет response раньше cleanup get_db,
+    # поэтому немедленное использование токена без явного commit видело бы пустую БД.
+    await db.commit()
+
     # Возвращаем JWT для немедленного входа
     expires_in = TOKEN_EXPIRE_MINUTES * 60
     token = encode_token(
